@@ -308,6 +308,9 @@ class XapkStartupOrderingTests(unittest.TestCase):
 
             def launch(*args, **kwargs):
                 events.append("launch")
+                if failure == "startup":
+                    return {"startup_failed": True, "initial_pid_present": False, "startup_retry_attempted": True,
+                            "process_alive_after_30s": None, "app_foreground": None}
                 return {"process_alive_after_30s": True, "app_foreground": True, "offline_after_launch": None}
 
             def settled(*args, **kwargs):
@@ -375,6 +378,14 @@ class XapkStartupOrderingTests(unittest.TestCase):
         self.assertFalse(report["launch_attempted"])
         self.assertNotIn("launch", events)
 
+    def test_missing_process_after_bounded_retry_fails_before_90s_observation(self):
+        status, report, events = self.run_fixture("startup")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_category"], "game_process_missing_after_startup_retry")
+        self.assertTrue(report["launch"]["startup_retry_attempted"])
+        self.assertIsNone(report["launch"]["process_alive_after_30s"])
+        self.assertNotIn("settled-90s", events)
+
     def test_full_bundle_verify_only_is_rejected_without_download(self):
         with tempfile.TemporaryDirectory(prefix="xapk-verify-test-") as temporary:
             root = Path(temporary).resolve()
@@ -423,19 +434,19 @@ class ExitAndLaunchDiagnosticsTests(unittest.TestCase):
     def test_latest_exit_info_returns_only_numeric_latest_fields(self):
         output = ("Historical Process Exit for com.axlebolt.standoff2:\n"
                   "  ApplicationExitInfo #0:\n"
-                  "    timestamp=private process=com.axlebolt.standoff2 reason=2 (SIGNALED) subreason=0 (UNKNOWN) status=9\n"
+                  "    timestamp=private pid=123 process=com.axlebolt.standoff2 reason=2 (SIGNALED) subreason=0 (UNKNOWN) status=9\n"
                   "    description=private diagnostic token=never-return\n"
                   "  ApplicationExitInfo #1:\n"
                   "    process=com.axlebolt.standoff2 reason=6 (ANR) subreason=7 status=0\n")
-        self.assertEqual(probe.parse_latest_exit_info(output), {"parsed": True, "reason": 2, "status": 9, "subreason": 0})
+        self.assertEqual(probe.parse_latest_exit_info(output), {"parsed": True, "pid": 123, "reason": 2, "status": 9, "subreason": 0})
         absent_subreason = "ApplicationExitInfo #0:\n process=com.axlebolt.standoff2 reason=1 (EXIT_SELF) status=0\n"
-        self.assertEqual(probe.parse_latest_exit_info(absent_subreason), {"parsed": True, "reason": 1, "status": 0, "subreason": None})
+        self.assertEqual(probe.parse_latest_exit_info(absent_subreason), {"parsed": True, "pid": None, "reason": 1, "status": 0, "subreason": None})
 
     def test_unknown_oversized_or_ambiguous_exit_info_does_not_invent_a_reason(self):
         for output in ("Permission denied", "ApplicationExitInfo #1:\n reason=2 status=9\n",
                        "ApplicationExitInfo #0:\n reason=2 reason=6 status=9\n", "x" * 65537):
             with self.subTest(output=output[:70]):
-                self.assertEqual(probe.parse_latest_exit_info(output), {"parsed": False, "reason": None, "status": None, "subreason": None})
+                self.assertEqual(probe.parse_latest_exit_info(output), {"parsed": False, "pid": None, "reason": None, "status": None, "subreason": None})
 
     def test_fixed_log_categories_detect_resource_graphics_translation_and_quit_markers(self):
         samples = {
@@ -501,6 +512,69 @@ class ExitAndLaunchDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(result["opengles_version"])
         self.assertTrue(all(value is None or len(value.encode()) <= 128 for value in result.values()))
         self.assertTrue(all(call.args[:2] == ("shell", "getprop") for call in calls.call_args_list))
+
+
+class StartupRetryTests(unittest.TestCase):
+    baseline = {"query_succeeded": True, "parsed": True, "pid": 111, "reason": 10, "subreason": 21, "status": 0}
+
+    def cold_start(self, second_pid, current_exit):
+        with tempfile.TemporaryDirectory(prefix="cold-start-test-") as temporary:
+            directory = Path(temporary)
+            pids = [None] + ([second_pid] * 7 if second_pid is not None else [None])
+            with patch.object(probe, "configure_immersive_confirmation", return_value={"confirmed": True}) as immersive, patch.object(
+                    probe, "latest_exit_info", side_effect=[dict(self.baseline), current_exit]), patch.object(
+                    probe, "process_id", side_effect=pids), patch.object(probe, "foreground_package", return_value=probe.PACKAGE), patch.object(
+                    probe, "sdk_graphics_summary", return_value={}), patch.object(probe.time, "sleep") as sleep, patch.object(
+                    probe, "adb", return_value=(0, "Status: ok\n", "")) as adb, patch.object(
+                    probe, "command", return_value=(0, b"\x89PNG\r\n\x1a\nfixture", b"")) as capture:
+                result = probe.launch_game("Activity", directory, network_mode="online")
+            starts = [call for call in adb.call_args_list if call.args[0] == "shell" and call.args[1].startswith("am start ")]
+            self.assertEqual(len(starts), 2)
+            self.assertEqual(starts[0].args, starts[1].args)
+            self.assertTrue(all(call.kwargs["timeout"] == 60 for call in starts))
+            self.assertFalse(any("force-stop" in str(call.args) for call in adb.call_args_list))
+            immersive.assert_called_once()
+            return result, [call.args[0] for call in sleep.call_args_list], capture.call_count
+
+    def test_second_cold_start_can_supply_live_pid_with_exactly_one_retry(self):
+        current = {**self.baseline, "pid": 222, "reason": 1, "subreason": 0}
+        result, waits, _ = self.cold_start("222", current)
+        self.assertFalse(result["startup_failed"])
+        self.assertFalse(result["initial_pid_present"])
+        self.assertTrue(result["startup_retry_attempted"])
+        self.assertEqual(result["startup_attempt_count"], 2)
+        self.assertEqual(result["startup_retry_limit"], 1)
+        self.assertTrue(result["process_alive_after_30s"])
+        self.assertTrue(result["exit_record_changed_since_launch"])
+        self.assertEqual(waits, [3, 2, 28])
+
+    def test_both_missing_pids_stop_without_unperformed_30s_claim_or_more_retries(self):
+        result, waits, captures = self.cold_start(None, dict(self.baseline))
+        self.assertTrue(result["startup_failed"])
+        self.assertFalse(result["exit_record_changed_since_launch"])
+        self.assertEqual(waits, [3])
+        self.assertEqual(captures, 0)
+        self.assertIsNone(result["process_alive_after_2s"])
+        self.assertIsNone(result["process_alive_after_30s"])
+        self.assertFalse(result["filtered_logcat_inspected"])
+
+    def test_exit_record_correlation_compares_only_valid_numeric_record_fields(self):
+        self.assertFalse(probe.exit_record_changed(self.baseline, dict(self.baseline)))
+        for field, value in (("pid", 222), ("reason", 2), ("status", 9), ("subreason", 0)):
+            with self.subTest(field=field):
+                self.assertTrue(probe.exit_record_changed(self.baseline, {**self.baseline, field: value}))
+        self.assertIsNone(probe.exit_record_changed({**self.baseline, "parsed": False}, self.baseline))
+        self.assertIsNone(probe.exit_record_changed({**self.baseline, "pid": None}, self.baseline))
+        self.assertIsNone(probe.exit_record_changed({**self.baseline, "pid": "111"}, self.baseline))
+
+    def test_am_start_requires_explicit_status_ok_before_checking_pid_or_retrying(self):
+        with patch.object(probe, "configure_immersive_confirmation", return_value={"confirmed": True}), patch.object(
+                probe, "latest_exit_info", return_value=self.baseline), patch.object(
+                probe, "adb", return_value=(0, "Starting: Intent ...\n", "")), patch.object(probe, "process_id") as pid:
+            with self.assertRaises(probe.CompatError) as caught:
+                probe.launch_game("Activity", Path("unused"), network_mode="online")
+        self.assertEqual(caught.exception.category, "activity_launch_failed")
+        pid.assert_not_called()
 
 
 if __name__ == "__main__":

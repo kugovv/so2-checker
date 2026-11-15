@@ -574,17 +574,17 @@ def game_screenshot(output_directory, filename):
 def parse_latest_exit_info(output):
     """Read numeric fields from Android 15 ApplicationExitInfo #0 only.
 
-    The package-scoped dumpsys output stays in memory. Timestamps, descriptions,
-    process details and trace paths are never returned or published.
+    Only numeric PID/reason/status/subreason are returned. The package-scoped
+    dump, timestamps, descriptions, process names and trace paths stay private.
     """
-    result = {"parsed": False, "reason": None, "status": None, "subreason": None}
+    result = {"parsed": False, "pid": None, "reason": None, "status": None, "subreason": None}
     if len(output.encode("utf-8")) > 64 * 1024:
         return result
     latest = re.search(r"(?ms)^[ \t]*ApplicationExitInfo #0:[ \t]*(.*?)(?=^[ \t]*ApplicationExitInfo #\d+:|\Z)", output)
     if not latest:
         return result
     fields = {}
-    for name in ("reason", "status", "subreason"):
+    for name in ("pid", "reason", "status", "subreason"):
         values = re.findall(r"(?:^|[ \t])" + name + r"=(-?\d{1,10})(?=[ \t\r\n]|$)", latest.group(1))
         if len(values) > 1:
             return result
@@ -601,8 +601,16 @@ def parse_latest_exit_info(output):
 
 def latest_exit_info():
     code, output, _ = adb("shell", "dumpsys", "activity", "exit-info", PACKAGE)
-    result = parse_latest_exit_info(output) if code == 0 else {"parsed": False, "reason": None, "status": None, "subreason": None}
+    result = parse_latest_exit_info(output) if code == 0 else {"parsed": False, "pid": None, "reason": None, "status": None, "subreason": None}
     return {"query_succeeded": code == 0, **result}
+
+
+def exit_record_changed(baseline, observed):
+    if (not baseline.get("parsed") or not observed.get("parsed")
+            or type(baseline.get("pid")) is not int or type(observed.get("pid")) is not int):
+        return None
+    fields = ("pid", "reason", "status", "subreason")
+    return tuple(baseline.get(name) for name in fields) != tuple(observed.get(name) for name in fields)
 
 
 def sdk_graphics_summary():
@@ -653,12 +661,38 @@ def launch_game(activity, output_directory, *, network_mode="offline"):
     import shlex
     component = shlex.quote(PACKAGE + "/" + activity)
     immersive = configure_immersive_confirmation()
-    code, output, errors = adb("shell", "am start -W -n " + component, timeout=60)
-    if code != 0 or "Error:" in output or "Error type" in output or "Status: timeout" in output:
-        detail = command_failure_detail("adb-am-start", code, output, errors)
-        detail["immersive_confirmation"] = immersive
-        raise CompatError("activity_launch_failed", detail)
+    baseline = latest_exit_info()
+
+    def start_once():
+        code, output, errors = adb("shell", "am start -W -n " + component, timeout=60)
+        status_ok = bool(re.search(r"(?m)^Status:[ \t]+ok[ \t]*\r?$", output))
+        if code != 0 or not status_ok or "Error:" in output or "Error type" in output:
+            detail = command_failure_detail("adb-am-start", code, output, errors)
+            detail["immersive_confirmation"] = immersive
+            raise CompatError("activity_launch_failed", detail)
+
+    start_once()
     first_pid = process_id()
+    initial_pid_present = first_pid is not None
+    retry = not initial_pid_present
+    if retry:
+        time.sleep(3)
+        start_once()
+        first_pid = process_id()
+    startup = {"initial_pid_present": initial_pid_present, "startup_retry_attempted": retry,
+               "startup_retry_limit": 1, "startup_attempt_count": 2 if retry else 1,
+               "am_start_status_ok": True, "exit_baseline": baseline}
+    if first_pid is None:
+        current_exit = latest_exit_info()
+        return {"attempted": True, "startup_failed": True, **startup,
+                "startup_network": network_mode, "immersive_confirmation": immersive,
+                "process_alive_after_2s": None, "process_alive_after_30s": None,
+                "early_foreground_package": None, "foreground_package": foreground_package(),
+                "app_foreground": None, "early_screenshot_saved": False, "screenshot_saved": False,
+                "offline_after_launch": None, "latest_exit_info": current_exit,
+                "exit_record_changed_since_launch": exit_record_changed(baseline, current_exit),
+                "sdk_graphics": sdk_graphics_summary(), "filtered_logcat_inspected": False,
+                "error_categories": {"process_exited": True, **log_error_categories("")}}
     time.sleep(2)
     early_alive, early_package = process_id() is not None, foreground_package()
     early_network_allowed = network_mode == "online" or offline_status()["verified"]
@@ -667,12 +701,15 @@ def launch_game(activity, output_directory, *, network_mode="offline"):
     alive, active_package = process_id() is not None, foreground_package()
     focused = active_package == PACKAGE
     after = offline_status() if network_mode == "offline" else None
-    result = {"attempted": True, "process_alive_after_30s": alive, "app_foreground": focused,
+    current_exit = latest_exit_info()
+    result = {"attempted": True, "startup_failed": False, **startup,
+              "process_alive_after_30s": alive, "app_foreground": focused,
               "startup_network": network_mode, "offline_after_launch": after, "screenshot_saved": False,
               "foreground_package": active_package,
               "immersive_confirmation": immersive,
               "process_alive_after_2s": early_alive, "early_foreground_package": early_package,
-              "early_screenshot_saved": bool(early_screenshot), "latest_exit_info": latest_exit_info(),
+              "early_screenshot_saved": bool(early_screenshot), "latest_exit_info": current_exit,
+              "exit_record_changed_since_launch": exit_record_changed(baseline, current_exit),
               "sdk_graphics": sdk_graphics_summary(),
               "error_categories": {"process_exited": not alive, **log_error_categories("")},
               "filtered_logcat_inspected": False}
@@ -809,6 +846,8 @@ def execute(phase):
                     if os.environ.get("ALLOW_OFFLINE_LAUNCH") == "true":
                         report["launch_attempted"] = True
                         report["launch"] = launch_game(activity, directory, network_mode=mode)
+                        if report["launch"].get("startup_failed"):
+                            raise CompatError("game_process_missing_after_startup_retry")
                         if full_bundle:
                             report["settled_after_90s"] = settled_startup_observation(directory, network_mode=mode)
                         if mode == "offline" and not report["launch"]["offline_after_launch"]["verified"]:
