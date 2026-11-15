@@ -133,7 +133,7 @@ def test_metadata_fallback_and_casefold_requested_nickname_deduplicate(db):
     assert corrected["match"]["id"] == first["match"]["id"]
 
 
-def test_unified_kda_comparison_uses_both_sources_without_changing_automatic_ratings(db):
+def test_confirmed_rounds_candidates_take_priority_without_changing_automatic_ratings(db):
     owner = personal.ensure_personal_user(db, 100)
     player = upsert_profile(db, profile())
     owner.primary_uid = player.uid
@@ -144,14 +144,14 @@ def test_unified_kda_comparison_uses_both_sources_without_changing_automatic_rat
     original_rating = automatic.rating
     assert original_rating > Decimal("1.00")
     result = personal.save_screenshot_match(db, 100, board("screenshot", kills=15, deaths=15, assists=4))
-    assert result["best"]["source"] == "screenshot" and result["best"]["rating_display"] == "1.00"
+    assert result["best"]["source"] == "automatic" and result['best']['rating_tier'] == 'rounds'
     assert automatic.rating == original_rating  # No main-stat/history rewrite.
     ingest_page(db, player.uid, "competitive", HistoryPage([
         match("future-auto", day=2, kills=30, deaths=10, assists=6),
     ]))
     best = personal.get_personal_best(db, owner, "competitive")
     assert best["source"] == "automatic" and best["match_id"] == "future-auto"
-    assert best["rating"] == float(calculate("competitive", 30, 10, 6, rounds=None)["value"])
+    assert best["rating"] == float(calculate("competitive", 30, 10, 6, rounds=20)["value"])
     assert best["original_rating"] is not None and best["original_rating_tier"] == "rounds"
     summary = serialize_profile(db, player, "competitive", "last20")["summary"]
     assert summary["count"] == 2
@@ -159,7 +159,9 @@ def test_unified_kda_comparison_uses_both_sources_without_changing_automatic_rat
 
 
 def test_automatic_tie_preserves_existing_screenshot_winner(db):
-    saved = personal.save_screenshot_match(db, 100, board("screenshot", kills=15, deaths=15, assists=4))
+    payload = board("screenshot", kills=15, deaths=15, assists=4)
+    payload.update(score=[10,10], personal_rounds=20)
+    saved = personal.save_screenshot_match(db, 100, payload)
     owner = db.get(m.User, 100)
     player = upsert_profile(db, profile())
     owner.primary_uid = player.uid
@@ -269,6 +271,7 @@ def test_winning_screenshot_correction_can_restore_automatic_record(db):
     user.primary_uid = upsert_profile(db, profile()).uid
     ingest_page(db, user.primary_uid, "competitive", HistoryPage([match("automatic")]))
     payload = board("screenshot", kills=30, deaths=3, assists=10)
+    payload.update(score=[10,10], personal_rounds=20)
     assert personal.save_screenshot_match(db, 100, payload)["best"]["source"] == "screenshot"
     payload["rows"][0].update(kills=1, deaths=20, assists=0)
     corrected = personal.save_screenshot_match(db, 100, payload)

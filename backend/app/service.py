@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from . import models as m
 from .config import get_settings
-from .rating import VERSION, calculate, displayed, rating_color, summarize
+from .rating import VERSION, formula_version, calculate, displayed, rating_color, summarize
 from .source import HistoryPage, SourceMatch, SourceProfile, SourceUnavailable
 
 MODES = {"competitive", "allies"}
@@ -75,7 +75,7 @@ def ingest_page(db: Session, uid: str, mode: str, page: HistoryPage, first_page:
             rating = calculate(mode, person.kills, person.deaths, person.assists, person.rounds)
             participant = db.scalar(select(m.Participant).where(m.Participant.match_id == match.id, m.Participant.player_uid == person.profile.uid))
             if participant is None:
-                participant = m.Participant(match_id=match.id, player_uid=person.profile.uid, mode=mode, ended_at=match.ended_at, formula_version=VERSION)
+                participant = m.Participant(match_id=match.id, player_uid=person.profile.uid, mode=mode, ended_at=match.ended_at, formula_version=formula_version(mode))
                 db.add(participant)
             for key, value in stats.items():
                 setattr(participant, key, value)
@@ -83,7 +83,7 @@ def ingest_page(db: Session, uid: str, mode: str, page: HistoryPage, first_page:
             participant.result = person.result
             participant.rating = rating["value"]
             participant.rating_tier = rating["tier"]
-            participant.formula_version = VERSION
+            participant.formula_version = formula_version(mode)
             participant.rating_inputs = rating["inputs"]
             participant.rating_parameters = rating["parameters"]
             participant.rating_factors = rating["factors"]

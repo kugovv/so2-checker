@@ -12,7 +12,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from .rating import PARAMETERS, WEIGHTS, calculate, displayed, rating_color
+from .rating import ALLIES_PARAMETERS, PARAMETERS, WEIGHTS, calculate, displayed, rating_color
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MODES = {"competitive": "Соревновательный 5×5", "allies": "Напарники 2×2"}
@@ -40,6 +40,15 @@ async def save_confirmed_screenshot(telegram_id, payload):
                 db.rollback()
                 raise
     return await asyncio.to_thread(save)
+
+
+async def load_confirmed_nickname(telegram_id):
+    def load():
+        from .db import SessionLocal
+        from .personal_matches import get_screenshot_nickname
+        with SessionLocal() as db:
+            return get_screenshot_nickname(db, telegram_id)
+    return await asyncio.to_thread(load)
 
 
 class ImageTooLarge(ValueError):
@@ -123,6 +132,16 @@ def statistics_text(row):
 
 
 def formula_text(mode):
+    if mode == "allies":
+        p = ALLIES_PARAMETERS
+        return ("Предварительная методика v2 · Напарники 2×2\n\n"
+                f"R = ((У + {p['assist_credit']} × А + {p['kill_prior']}) / (С + {p['death_prior']})) ^ {p['exponent']}.\n"
+                "У — убийства, С — смерти, А — ассисты.\n\n"
+                "Главный фактор — соотношение убийств и смертей. Ассисты дают осторожный положительный вклад. "
+                "Добавки +1 и +2 — консервативное сглаживание малой статистики, не реальные фраги. "
+                "Степень 0.60 ограничивает рост крайних результатов, верхнего потолка нет. "
+                "Коэффициенты предварительные. Раунды, звание, MVP и MMR не участвуют. "
+                "Это оценка дуэльной эффективности по K/D/A: темп игры и пассивность по ней определить нельзя.")
     norms = PARAMETERS[mode]["match"]
     return (f"Предварительная методика v1 · {MODES[mode]}\n\n"
             f"R = max(0; 1 + {WEIGHTS['kills']} × (У/{norms['kills']} − 1)"
@@ -136,9 +155,10 @@ def formula_text(mode):
 
 
 class ScreenshotController:
-    def __init__(self, analyzer=None, *, saver=None, public_url=None, ttl=600, cooldown=10, clock=time.monotonic):
+    def __init__(self, analyzer=None, *, saver=None, nickname_loader=None, public_url=None, ttl=600, cooldown=10, clock=time.monotonic):
         self.analyzer = analyzer or analyze_screenshot
         self.saver = saver or save_confirmed_screenshot
+        self.nickname_loader = nickname_loader or load_confirmed_nickname
         self.public_url = public_url if isinstance(public_url, str) and public_url.startswith("https://") else None
         self.ttl = ttl
         self.cooldown = cooldown
@@ -208,6 +228,11 @@ class ScreenshotController:
             await self._clear(state)
             await self.answer(message, "Разбор отменён. Новый скриншот можно прислать в любое время.")
 
+    async def nickname_help(self, message, state):
+        if message.chat.type == 'private':
+            await self._clear(state)
+            await self.answer(message, "Чтобы сменить сохранённый ник, пришлите следующий скриншот с новым ником в подписи. Я заменю ник только после подтверждения вашей строки и сохранения матча.")
+
     async def upload(self, message, state, bot):
         if message.chat.type != "private":
             await self.answer(message, "Пришлите скриншот в личный чат с ботом.")
@@ -253,6 +278,19 @@ class ScreenshotController:
             data["expires"] = self.clock() + self.ttl
             self._expire(state, data["expires"])
             nickname = caption_nickname(getattr(message, "caption", None))
+            if not nickname:
+                try:
+                    remembered = await self.nickname_loader(message.from_user.id)
+                except Exception:
+                    remembered = None
+                if remembered:
+                    indices, exact = matching_rows(data['rows'], remembered)
+                    if exact and len(indices) == 1:
+                        nickname = remembered
+                    else:
+                        await self._save(state, data, 'nickname')
+                        await self.answer(message, f"Сохранённый ник «{remembered}» не найден однозначно на снимке. Напишите ник для этого матча; после подтверждения я запомню его.")
+                        return
             if nickname:
                 await self._select_nickname(message, state, data, nickname)
             else:
@@ -297,6 +335,7 @@ class ScreenshotController:
                           reply_markup=keyboard)
 
     async def _manual(self, message, state, data):
+        data.pop('personal_rounds', None)
         index = data.get("selected_index")
         if type(index) is not int or not 0 <= index < len(data["rows"]):
             data["manual_after_selection"] = True
@@ -317,6 +356,14 @@ class ScreenshotController:
         mode = data.get("mode")
         buttons = [[InlineKeyboardButton(text=("✓ " if mode == key else "") + label,
                      callback_data=f"shot:{data['nonce']}:mode:{key}")] for key, label in MODES.items()]
+        if mode == "competitive":
+            score = data.get('score')
+            total = sum(score) if score and len(score) == 2 else 0
+            if 0 < total <= 200:
+                buttons.append([InlineKeyboardButton(text=f"Сыграл все {total} раундов",
+                                callback_data=f"shot:{data['nonce']}:rounds:all")])
+            buttons.append([InlineKeyboardButton(text="Личные раунды неизвестны",
+                            callback_data=f"shot:{data['nonce']}:rounds:unknown")])
         if mode in MODES and all(type(row.get(key)) is int for key in ("kills", "deaths", "assists")):
             buttons.append([InlineKeyboardButton(text="Верно, рассчитать",
                             callback_data=f"shot:{data['nonce']}:confirm")])
@@ -335,8 +382,10 @@ class ScreenshotController:
         await self.answer(message, f"Проверьте данные\n{identity}\n"
                           f"K/D/A: {statistics_text(row)}\n"
                           f"Порядок: убийства / смерти / ассисты.\nРежим: {mode_text}{context_text}\n\n"
-                          "Личные сыгранные раунды и сила соперников не подтверждены. "
-                          "Используется предварительная оценка по K/D/A.",
+                          + (f"Личных раундов: {data['personal_rounds']}. Вы подтвердили полное участие."
+                             if mode == "competitive" and data.get('personal_rounds') else
+                             "Личные раунды неизвестны: будет упрощённая оценка. Подтвердите полное участие кнопкой, только если играли весь матч."
+                             if mode == "competitive" else "Отдельная методика Напарников v2: основной фактор — соотношение K/D, ассисты повышают оценку."),
                           reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
     async def text(self, message, state):
@@ -381,6 +430,7 @@ class ScreenshotController:
         valid = ((action == "row" and len(parts) == 4 and data["phase"] == "choose"
                   and re.fullmatch(r"[0-9]{1,2}", parts[3]) is not None)
                  or (action == "mode" and len(parts) == 4 and data["phase"] == "confirm" and parts[3] in MODES)
+                 or (action == "rounds" and len(parts) == 4 and data["phase"] == "confirm" and parts[3] in {"all", "unknown"} and data.get('mode') == 'competitive')
                  or (action == "manual" and len(parts) == 3 and data["phase"] in {"choose", "confirm"})
                  or (action == "confirm" and len(parts) == 3 and data["phase"] == "confirm"))
         if not valid:
@@ -399,6 +449,18 @@ class ScreenshotController:
                 await self._confirmation(message, state, data)
         elif action == "mode":
             data["mode"] = parts[3]
+            data.pop('personal_rounds', None)
+            await self._confirmation(message, state, data)
+        elif action == "rounds":
+            score = data.get('score')
+            total = sum(score) if score and len(score) == 2 else 0
+            if parts[3] == 'all' and 0 < total <= 200:
+                if data['selected'].get('deaths') is not None and data['selected']['deaths'] > total:
+                    await self.answer(message, "Смертей больше числа раундов. Исправьте K/D/A или счёт не распознан верно; полное участие не подтверждено.")
+                    return
+                data['personal_rounds'] = total
+            else:
+                data.pop('personal_rounds', None)
             await self._confirmation(message, state, data)
         elif action == "manual":
             await self._manual(message, state, data)
@@ -408,7 +470,8 @@ class ScreenshotController:
                 await self._confirmation(message, state, data)
                 return
             # A scoreboard's final score is never substituted for personal rounds.
-            result = calculate(mode, row["kills"], row["deaths"], row["assists"], rounds=None)
+            personal_rounds = data.get('personal_rounds') if mode == 'competitive' else None
+            result = calculate(mode, row["kills"], row["deaths"], row["assists"], rounds=personal_rounds)
             icon = COLOR_ICONS[rating_color(result["value"])]
             requested = data.get("requested_nickname") or row["nickname"]
             identity = f"Игрок: {requested}"
@@ -417,7 +480,9 @@ class ScreenshotController:
             text = (f"{icon} Рейтинг за матч: {displayed(result['value'])}\n"
                     f"{identity}\n{MODES[mode]} · K/D/A {statistics_text(row)}\n\n"
                     "Источник: подтверждённые данные скриншота.\n"
-                    "Предварительная оценка v1 по K/D/A, без личных раундов и MMR.")
+                    + ("Предварительная дуэльная оценка 2×2 · v2 по K/D/A, без MMR."
+                       if mode == "allies" else f"Оценка по личным раундам: {personal_rounds}. Полное участие подтверждено вами. Без MMR."
+                       if personal_rounds else "Предварительная оценка v1 по K/D/A, без личных раундов и MMR."))
             selected_index = data.get("selected_index")
             if type(selected_index) is not int or not 0 <= selected_index < len(data.get("rows", [])):
                 await self._manual(message, state, data)
@@ -429,6 +494,7 @@ class ScreenshotController:
                 "requested_nickname": requested, "match_id": data.get("match_id"),
                 "map_name": data.get("map_name"), "score": data.get("score"),
                 "played_at": None, "date_label": None, "image_fingerprint": data.get("image_fingerprint"),
+                "personal_rounds": personal_rounds,
             }
             sender = getattr(query, "from_user", None)
             try:
@@ -442,6 +508,7 @@ class ScreenshotController:
                              callback_data=f"shot:{data['nonce']}:confirm")]]
             else:
                 text += "\n\nМатч сохранён."
+                text += f"\nНик «{requested}» запомнен. Следующие скриншоты можно присылать без подписи. Для смены укажите новый ник в подписи."
                 if saved.get("is_new_best") is True:
                     text += "\nНовый личный рекорд!"
                 await self._clear(state)
@@ -466,6 +533,7 @@ def create_screenshot_router(analyzer=None, *, saver=None, public_url=None):
     router = Router(name="screenshot-ratings")
     router.message.register(controller.start, Command("match", "rate"))
     router.message.register(controller.cancel, Command("cancel"))
+    router.message.register(controller.nickname_help, Command("nickname"))
     router.message.register(controller.upload, F.photo | F.document)
     router.message.register(controller.text, StateFilter(*STATES), F.text)
     router.callback_query.register(controller.formula, F.data.startswith("shot-formula:"))

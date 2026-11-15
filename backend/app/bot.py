@@ -44,6 +44,7 @@ async def run():
         await bot.set_my_commands([
             BotCommand(command="start", description="Открыть приложение"),
             BotCommand(command="match", description="Разобрать матч по скриншоту"),
+            BotCommand(command="nickname", description="Как сменить сохранённый ник"),
             BotCommand(command="cancel", description="Отменить разбор скриншота"),
         ])
         await dispatcher.start_polling(bot, allowed_updates=["message", "callback_query"], close_bot_session=False)

@@ -35,7 +35,7 @@ export type PersonalMatchSnapshot = {
   ended_at: string | null; date_label: string | null; loaded_at: string;
   nickname: string; requested_nickname: string | null; player_uid: string | null;
   kills: number; deaths: number; assists: number; rating: number; rating_display: string; rating_color: RatingColor;
-  formula_version: string; rating_tier: 'match'; method_note: string; selected_index: number;
+  formula_version: string; rating_tier: 'match' | 'rounds' | 'duels'; personal_rounds?: number | null; method_note: string; selected_index: number;
   players: PersonalMatchPlayer[]; original_rating: number | null; original_rating_tier: string | null;
 };
 

@@ -1,16 +1,23 @@
 """Deterministic provisional Standoff efficiency v1, not an official game rating."""
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 from statistics import median, pstdev
 
 VERSION = "so2-v1-preliminary"
+ALLIES_VERSION = "so2-allies-v2-preliminary"
+# Conservative low-evidence prior, not real kills/deaths. One combined
+# duel ratio prevents adding a second bonus for the same kills through KPR.
+ALLIES_PARAMETERS = {"kill_prior": "1", "death_prior": "2", "assist_credit": "0.35", "exponent": "0.60"}
+
+
+def formula_version(mode):
+    return ALLIES_VERSION if mode == "allies" else VERSION
 PARAMETERS = {
     "competitive": {
         "rounds": {"kills": "0.70", "deaths": "0.70", "assists": "0.20"},
         "match": {"kills": "15", "deaths": "15", "assists": "4"},
     },
     "allies": {
-        "rounds": {"kills": "0.80", "deaths": "0.80", "assists": "0.15"},
-        "match": {"kills": "10", "deaths": "10", "assists": "2"},
+        "duels": ALLIES_PARAMETERS,
     },
 }
 WEIGHTS = {"kills": "0.65", "deaths": "0.25", "assists": "0.10"}
@@ -45,6 +52,20 @@ def calculate(mode, kills, deaths, assists, rounds=None):
         return {"value": None, "tier": None, "inputs": inputs, "parameters": {}, "factors": {}}
     if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in (kills, deaths, assists)):
         raise ValueError("Invalid statistics")
+    if mode == "allies":
+        with localcontext() as context:
+            context.prec = 40
+            p = {key: dec(value) for key, value in ALLIES_PARAMETERS.items()}
+            numerator = dec(kills) + p['assist_credit'] * dec(assists) + p['kill_prior']
+            denominator = dec(deaths) + p['death_prior']
+            ratio = numerator / denominator
+            value = ratio ** p['exponent']
+            return {"value": value.quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP),
+                    "tier": "duels", "inputs": inputs,
+                    "parameters": {**ALLIES_PARAMETERS, "mode": mode, "model": "smoothed_duel_ratio",
+                                   "opponent_adjustment": False, "rounds_used": False},
+                    "factors": {"duel_numerator": float(numerator), "duel_denominator": float(denominator),
+                                "duel_ratio": float(ratio), "exponent": float(p['exponent'])}}
     tier = "rounds" if isinstance(rounds, int) and not isinstance(rounds, bool) and rounds > 0 else "match"
     norms = PARAMETERS[mode][tier]
     divisor = dec(rounds) if tier == "rounds" else Decimal(1)

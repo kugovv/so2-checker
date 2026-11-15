@@ -17,14 +17,18 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from . import models as m
-from .rating import PARAMETERS, VERSION, WEIGHTS, calculate, displayed, rating_color
+from .rating import ALLIES_VERSION, ALLIES_PARAMETERS, PARAMETERS, VERSION, WEIGHTS, calculate, displayed, rating_color
 
 MODES = {"competitive", "allies"}
 METHOD_NOTE = "Единый расчёт по K/D/A"
 SCREENSHOT_NOTE = "Подтверждена ваша строка; остальные показатели распознаны со скриншота."
 PAYLOAD_FIELDS = {"mode", "rows", "selected_index", "requested_nickname", "match_id", "map_name",
-                  "score", "played_at", "date_label", "image_fingerprint"}
+                  "score", "played_at", "date_label", "image_fingerprint", "personal_rounds"}
 ROW_FIELDS = {"nickname", "aliases", "uid", "team", "kills", "deaths", "assists", "game_score", "rank"}
+
+
+def _version(mode):
+    return ALLIES_VERSION if mode == "allies" else VERSION
 
 
 def _insert(db, model):
@@ -142,12 +146,17 @@ def _normalize_payload(payload):
     fingerprint = payload.get("image_fingerprint")
     if fingerprint is not None and (not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint)):
         raise ValueError("Некорректный отпечаток скриншота")
+    personal_rounds = payload.get('personal_rounds')
+    if personal_rounds is not None:
+        if (mode != 'competitive' or type(personal_rounds) is not int or not 1 <= personal_rounds <= 200
+                or not score or personal_rounds > sum(score) or rows[selected]['deaths'] > personal_rounds):
+            raise ValueError('Некорректное подтверждение личных раундов')
     return {"mode": mode, "rows": rows, "selected_index": selected,
             "requested_nickname": _text(payload.get("requested_nickname"), 80, optional=True),
             "match_id": match_id, "map_name": _text(payload.get("map_name"), 128, optional=True),
             "score": score, "played_at": _date(payload.get("played_at")),
             "date_label": _text(payload.get("date_label"), 80, optional=True),
-            "image_fingerprint": fingerprint.lower() if fingerprint else None}
+            "image_fingerprint": fingerprint.lower() if fingerprint else None, "personal_rounds": personal_rounds}
 
 
 def _dedup_key(payload):
@@ -172,10 +181,10 @@ def _dedup_key(payload):
     return hashlib.sha256(json.dumps(key, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
-def _rated_players(rows, mode, selected, source):
+def _rated_players(rows, mode, selected, source, personal_rounds=None):
     players = []
     for index, row in enumerate(rows):
-        calculation = calculate(mode, row["kills"], row["deaths"], row["assists"], rounds=None)
+        calculation = calculate(mode, row["kills"], row["deaths"], row["assists"], rounds=personal_rounds if index == selected else None)
         value = calculation["value"]
         players.append({**row, "selected": index == selected,
                         "user_confirmed": source == "screenshot" and index == selected,
@@ -186,9 +195,9 @@ def _rated_players(rows, mode, selected, source):
 
 def _snapshot(*, source, snapshot_id, mode, rows, selected, match_id, map_name, score,
               ended_at, date_label, loaded_at, requested_nickname=None, screenshot_id=None,
-              original_rating=None, original_rating_tier=None):
+              original_rating=None, original_rating_tier=None, personal_rounds=None):
     own = rows[selected]
-    result = calculate(mode, own["kills"], own["deaths"], own["assists"], rounds=None)
+    result = calculate(mode, own["kills"], own["deaths"], own["assists"], rounds=personal_rounds)
     return {"id": snapshot_id, "screenshot_id": screenshot_id, "source": source,
             "source_label": "Со скриншота" if source == "screenshot" else "Из игровой истории",
             "source_note": SCREENSHOT_NOTE if source == "screenshot" else "Сохранённые данные игрового источника.",
@@ -199,11 +208,12 @@ def _snapshot(*, source, snapshot_id, mode, rows, selected, match_id, map_name, 
             "player_uid": own.get("uid"), "selected_index": selected,
             **{key: own[key] for key in ("kills", "deaths", "assists")},
             "rating": float(result["value"]), "rating_display": displayed(result["value"]),
-            "rating_color": rating_color(result["value"]), "formula_version": VERSION,
-            "rating_tier": "match", "method_note": METHOD_NOTE,
+            "rating_color": rating_color(result["value"]), "formula_version": _version(mode),
+            "rating_tier": result["tier"], "personal_rounds": personal_rounds,
+            "method_note": "Дуэльная оценка 2×2 · v2" if mode == "allies" else "По подтверждённым личным раундам" if personal_rounds else METHOD_NOTE,
             "rating_inputs": result["inputs"], "rating_parameters": result["parameters"],
             "rating_factors": result["factors"],
-            "players": _rated_players(rows, mode, selected, source),
+            "players": _rated_players(rows, mode, selected, source, personal_rounds),
             "original_rating": float(original_rating) if original_rating is not None else None,
             "original_rating_tier": original_rating_tier}
 
@@ -216,14 +226,25 @@ def _screenshot_snapshot(shot):
                      mode=shot.mode, rows=rows, selected=cached["selected_index"], match_id=shot.match_id,
                      map_name=cached.get("map"), score=cached.get("score"), ended_at=cached.get("ended_at"),
                      date_label=cached.get("date_label"), loaded_at=_iso(shot.created_at),
-                     requested_nickname=cached.get("requested_nickname"))
+                     requested_nickname=cached.get("requested_nickname"), personal_rounds=cached.get('personal_rounds'))
+
+
+def _rounds_sql(model):
+    return model.snapshot['personal_rounds'].as_integer() if model is m.ScreenshotMatch else model.rounds
 
 
 def _rating_sql(model, mode):
+    if mode == "allies":
+        p = {key: Decimal(value) for key, value in ALLIES_PARAMETERS.items()}
+        numerator = cast(model.kills, Numeric(28, 12)) + p['assist_credit'] * cast(model.assists, Numeric(28, 12)) + p['kill_prior']
+        denominator = cast(model.deaths, Numeric(28, 12)) + p['death_prior']
+        return func.round(cast(func.power(numerator / denominator, p['exponent']), Numeric(28, 12)), 8)
     norms = PARAMETERS[mode]["match"]
+    rounds = _rounds_sql(model)
     value = literal(Decimal("1"), type_=Numeric(28, 12))
     for field in ("kills", "deaths", "assists"):
-        factor = (cast(getattr(model, field), Numeric(28, 12)) / Decimal(norms[field]) - 1) * Decimal(WEIGHTS[field])
+        divisor = case((rounds > 0, cast(rounds, Numeric(28, 12)) * Decimal(PARAMETERS[mode]['rounds'][field])), else_=Decimal(norms[field]))
+        factor = (cast(getattr(model, field), Numeric(28, 12)) / divisor - 1) * Decimal(WEIGHTS[field])
         value = value - factor if field == "deaths" else value + factor
     return func.round(case((value < 0, literal(Decimal(0))), else_=value), 8)
 
@@ -242,30 +263,38 @@ def _automatic_snapshot(db, participant):
                      mode=participant.mode, rows=rows, selected=selected, match_id=participant.match_id,
                      map_name=match.map, score=match.score, ended_at=_iso(match.ended_at), date_label=None,
                      loaded_at=_iso(m.utcnow()), original_rating=participant.rating,
-                     original_rating_tier=participant.rating_tier)
+                     original_rating_tier=participant.rating_tier, personal_rounds=participant.rounds if participant.mode == 'competitive' else None)
 
 
 def _best_candidates(db, user, mode):
     candidates = []
-    shot = db.scalar(select(m.ScreenshotMatch).where(m.ScreenshotMatch.telegram_id == user.telegram_id,
-                        m.ScreenshotMatch.mode == mode).order_by(_rating_sql(m.ScreenshotMatch, mode).desc(),
-                        m.ScreenshotMatch.created_at, m.ScreenshotMatch.id).limit(1))
-    if shot is not None:
-        candidates.append(_screenshot_snapshot(shot))
+    for confirmed in ([True, False] if mode == 'competitive' else [None]):
+        query = select(m.ScreenshotMatch).where(m.ScreenshotMatch.telegram_id == user.telegram_id, m.ScreenshotMatch.mode == mode)
+        if confirmed is not None:
+            query = query.where(_rounds_sql(m.ScreenshotMatch) > 0 if confirmed else func.coalesce(_rounds_sql(m.ScreenshotMatch), 0) <= 0)
+        shot = db.scalar(query.order_by(_rating_sql(m.ScreenshotMatch, mode).desc(), m.ScreenshotMatch.created_at, m.ScreenshotMatch.id).limit(1))
+        if shot is not None:
+            candidates.append(_screenshot_snapshot(shot))
     if user.primary_uid:
-        person = db.scalar(select(m.Participant).join(m.Match, m.Match.id == m.Participant.match_id).where(
+        for confirmed in ([True, False] if mode == 'competitive' else [None]):
+            query = select(m.Participant).join(m.Match, m.Match.id == m.Participant.match_id).where(
             m.Participant.player_uid == user.primary_uid, m.Participant.mode == mode,
             m.Match.mode == mode, m.Match.completed.is_(True),
             m.Participant.kills.is_not(None), m.Participant.deaths.is_not(None), m.Participant.assists.is_not(None),
             m.Participant.kills >= 0, m.Participant.deaths >= 0, m.Participant.assists >= 0,
-        ).order_by(_rating_sql(m.Participant, mode).desc(), m.Participant.ended_at, m.Participant.id).limit(1))
-        if person is not None:
-            candidates.append(_automatic_snapshot(db, person))
+            )
+            if confirmed is not None:
+                query = query.where(m.Participant.rounds > 0 if confirmed else func.coalesce(m.Participant.rounds, 0) <= 0)
+            person = db.scalar(query.order_by(_rating_sql(m.Participant, mode).desc(), m.Participant.ended_at, m.Participant.id).limit(1))
+            if person is not None:
+                candidates.append(_automatic_snapshot(db, person))
+    if mode == 'competitive' and any(item['rating_tier'] == 'rounds' for item in candidates):
+        return [item for item in candidates if item['rating_tier'] == 'rounds']
     return candidates
 
 
 def _best_snapshot_valid(db, best, user, mode):
-    if best.formula_version != VERSION:
+    if best.formula_version != _version(mode):
         return False
     if best.source == "screenshot":
         shot = db.scalar(select(m.ScreenshotMatch).where(m.ScreenshotMatch.id == best.screenshot_id,
@@ -283,7 +312,7 @@ def _best_snapshot_valid(db, best, user, mode):
             m.Participant.mode == mode, m.Match.completed.is_(True)))
         if person is None or any(getattr(person, key) is None for key in ("kills", "deaths", "assists")):
             return False
-        result = calculate(mode, person.kills, person.deaths, person.assists, rounds=None)
+        result = calculate(mode, person.kills, person.deaths, person.assists, rounds=person.rounds if mode == 'competitive' else None)
         valid = result["value"] == best.rating
         if valid:
             current = _automatic_snapshot(db, person)
@@ -305,12 +334,16 @@ def _select_best(db, user, mode):
     if not candidates:
         return None
     candidate = max(candidates, key=lambda item: Decimal(str(item["rating"])))
+    if existing is not None and existing.snapshot.get('rating_tier') != candidate['rating_tier']:
+        db.delete(existing)
+        db.flush()
+        existing = None
     if existing is not None and candidate["id"] == existing.source_key:
         candidate["loaded_at"] = existing.snapshot.get("loaded_at") or candidate["loaded_at"]
     value = Decimal(str(candidate["rating"]))
     statement = _insert(db, m.PersonalBest).values(
         telegram_id=user.telegram_id, mode=mode, source=candidate["source"], source_key=candidate["id"],
-        screenshot_id=candidate["screenshot_id"], rating=value, formula_version=VERSION,
+        screenshot_id=candidate["screenshot_id"], rating=value, formula_version=_version(mode),
         snapshot=candidate, updated_at=m.utcnow())
     excluded = statement.excluded
     db.execute(statement.on_conflict_do_update(
@@ -333,30 +366,41 @@ def save_screenshot_match(db, telegram_id: int, payload: dict) -> dict:
     mode = payload["mode"]
     previous = db.get(m.PersonalBest, (telegram_id, mode))
     previous_exists = previous is not None
-    previous_rating = previous.rating if previous is not None and previous.formula_version == VERSION else None
+    previous_rating = previous.rating if previous is not None and previous.formula_version == _version(mode) else None
     dedup_key = _dedup_key(payload)
     shot = db.scalar(select(m.ScreenshotMatch).where(m.ScreenshotMatch.telegram_id == telegram_id,
                      m.ScreenshotMatch.mode == mode, m.ScreenshotMatch.dedup_key == dedup_key))
     now = m.utcnow()
     own = payload["rows"][payload["selected_index"]]
-    calculation = calculate(mode, own["kills"], own["deaths"], own["assists"], rounds=None)
+    user.screenshot_nickname = payload['requested_nickname'] or own['nickname']
+    calculation = calculate(mode, own["kills"], own["deaths"], own["assists"], rounds=payload.get('personal_rounds'))
     if shot is None:
         shot = m.ScreenshotMatch(telegram_id=telegram_id, mode=mode, dedup_key=dedup_key,
                                 created_at=now, snapshot={})
         db.add(shot)
     shot.match_id, shot.nickname = payload["match_id"], own["nickname"]
     shot.kills, shot.deaths, shot.assists = own["kills"], own["deaths"], own["assists"]
-    shot.rating, shot.formula_version, shot.updated_at = calculation["value"], VERSION, now
+    shot.rating, shot.formula_version, shot.updated_at = calculation["value"], _version(mode), now
     db.flush()
     shot.snapshot = _snapshot(source="screenshot", snapshot_id=f"screenshot:{shot.id}", screenshot_id=shot.id,
         mode=mode, rows=payload["rows"], selected=payload["selected_index"], match_id=payload["match_id"],
-        map_name=payload["map_name"], score=payload["score"], ended_at=payload["played_at"],
+        map_name=payload["map_name"], score=payload["score"], ended_at=payload["played_at"], personal_rounds=payload.get('personal_rounds'),
         date_label=payload["date_label"], loaded_at=_iso(shot.created_at), requested_nickname=payload["requested_nickname"])
     db.flush()
     best = _select_best(db, user, mode)
     is_new = (best is not None and best["id"] == f"screenshot:{shot.id}"
               and (not previous_exists or (previous_rating is not None and Decimal(str(best["rating"])) > previous_rating)))
     return {"match": deepcopy(shot.snapshot), "best": best, "is_new_best": is_new}
+
+
+def get_screenshot_nickname(db, telegram_id):
+    user = db.get(m.User, telegram_id)
+    if user is not None and user.screenshot_nickname:
+        return user.screenshot_nickname
+    # Reuse an already confirmed old upload after upgrading; no fake identity.
+    shot = db.scalar(select(m.ScreenshotMatch).where(m.ScreenshotMatch.telegram_id == telegram_id)
+                     .order_by(m.ScreenshotMatch.updated_at.desc(), m.ScreenshotMatch.id.desc()).limit(1))
+    return (shot.snapshot.get('requested_nickname') or shot.nickname) if shot else None
 
 
 def get_personal_best(db, user, mode):

@@ -68,7 +68,9 @@ async def harness(board=None, *, analyzer=None, saver=None, public_url=None, ttl
     async def default_saver(telegram_id, payload):
         return {"match": {}, "best": None, "is_new_best": False}
 
-    kwargs = {"ttl": ttl, "cooldown": 0, "saver": saver or default_saver, "public_url": public_url}
+    async def no_nickname(_):
+        return None
+    kwargs = {"ttl": ttl, "cooldown": 0, "saver": saver or default_saver, "nickname_loader": no_nickname, "public_url": public_url}
     if clock:
         kwargs["clock"] = clock
     controller = ScreenshotController(analyzer or default_analyzer, **kwargs)
@@ -209,7 +211,7 @@ def test_manual_correction_and_mode_change_are_confirmed_again():
             assert stale.answers[-1][1]["show_alert"]
             assert not any("Рейтинг за матч:" in text for text, _ in correction.answers)
             await click(controller, state, correction, "confirm")
-            assert "Рейтинг за матч: 1.34" in correction.answers[-1][0]
+            assert "Рейтинг за матч: 1.07" in correction.answers[-1][0]
             assert "Напарники 2×2" in correction.answers[-1][0]
     asyncio.run(scenario())
 

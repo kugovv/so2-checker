@@ -16,6 +16,7 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     primary_uid: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("players.uid"))
     mode: Mapped[str] = mapped_column(String(20), default="competitive")
+    screenshot_nickname: Mapped[Optional[str]] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_active: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
