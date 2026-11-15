@@ -117,6 +117,7 @@ jobs:
           path: |
             artifacts/android-game-compat/report.json
             artifacts/android-game-compat/startup-game.png
+            artifacts/android-game-compat/early-startup-game.png
           retention-days: 1
           if-no-files-found: warn
           compression-level: 6

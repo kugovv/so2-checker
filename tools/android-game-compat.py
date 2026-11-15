@@ -489,6 +489,83 @@ def prepare_startup_network(mode):
     return {"startup_network": "online", "network_modified": False, "offline_verification_required": False}
 
 
+def game_screenshot(output_directory, filename):
+    if filename not in {"startup-game.png", "early-startup-game.png"}:
+        raise CompatError("invalid_screenshot_name")
+    if process_id() is None or not foreground():
+        return False
+    code, png, _ = command(["adb", "-s", SERIAL, "exec-out", "screencap", "-p"], binary=True)
+    if (code == 0 and png.startswith(b"\x89PNG\r\n\x1a\n") and len(png) <= 4 * 1024 * 1024
+            and process_id() is not None and foreground()):
+        (output_directory / filename).write_bytes(png)
+        return True
+    return False
+
+
+def parse_latest_exit_info(output):
+    """Read numeric fields from Android 15 ApplicationExitInfo #0 only.
+
+    The package-scoped dumpsys output stays in memory. Timestamps, descriptions,
+    process details and trace paths are never returned or published.
+    """
+    result = {"parsed": False, "reason": None, "status": None, "subreason": None}
+    if len(output.encode("utf-8")) > 64 * 1024:
+        return result
+    latest = re.search(r"(?ms)^[ \t]*ApplicationExitInfo #0:[ \t]*(.*?)(?=^[ \t]*ApplicationExitInfo #\d+:|\Z)", output)
+    if not latest:
+        return result
+    fields = {}
+    for name in ("reason", "status", "subreason"):
+        values = re.findall(r"(?:^|[ \t])" + name + r"=(-?\d{1,10})(?=[ \t\r\n]|$)", latest.group(1))
+        if len(values) > 1:
+            return result
+        if values:
+            value = int(values[0])
+            if not -(2 ** 31) <= value < 2 ** 31:
+                return result
+            fields[name] = value
+    if "reason" in fields and "status" in fields:
+        result.update(fields)
+        result["parsed"] = True
+    return result
+
+
+def latest_exit_info():
+    code, output, _ = adb("shell", "dumpsys", "activity", "exit-info", PACKAGE)
+    result = parse_latest_exit_info(output) if code == 0 else {"parsed": False, "reason": None, "status": None, "subreason": None}
+    return {"query_succeeded": code == 0, **result}
+
+
+def sdk_graphics_summary():
+    properties = {"hardware_egl": "ro.hardware.egl", "opengles_version": "ro.opengles.version",
+                  "abi_list": "ro.product.cpu.abilist", "native_bridge": "ro.dalvik.vm.native.bridge"}
+    result = {}
+    for label, name in properties.items():
+        code, value, _ = adb("shell", "getprop", name)
+        result[label] = value.strip().encode("utf-8")[:128].decode("utf-8", errors="ignore") or None if code == 0 else None
+    return result
+
+
+def log_error_categories(logs):
+    resource = r"(?:\bobb\b|\.obb\b|\b(?:expansion(?:[ _-]?file)?|(?:game[ _-]?)?assets?|resource[ _-]?manifest|unity[ _-]?data|player[ _-]?data|globalgamemanagers|data\.unity3d)\b)"
+    missing = r"(?:missing|not found|does not exist|no such file|unable to (?:find|load|locate|open)|failed to (?:find|load|open|locate)|could(?: not|n't) (?:find|load|open|locate)|cannot (?:find|load|open|locate)|error (?:loading|opening|finding))"
+    patterns = {
+        "native_crash_observed": r"Fatal signal|tombstoned",
+        "linker_error_observed": r"UnsatisfiedLinkError|dlopen failed",
+        "java_crash_observed": r"FATAL EXCEPTION",
+        "anr_observed": r"ANR in",
+        "missing_game_assets_observed": resource + r"[^\n]{0,180}" + missing + "|" + missing + r"[^\n]{0,180}" + resource
+            + r"|\bno (?:valid |matching )?(?:obb|expansion files?|game assets|unity data)[^\n]{0,80}\b(?:found|available|present)\b"
+            + r"|\b(?:obb|expansion)[^\n]{0,80}\bpath\b[^\n]{0,40}\b(?:null|empty|missing|not found)\b",
+        "graphics_initialization_failure_observed": r"(?:failed|unable) to (?:initialize|initialise|create)[^\n]{0,120}(?:EGL|Vulkan|OpenGL|graphics|GfxDevice)|EGL_BAD_[A-Z_]+|\b(?:EGL|Vulkan|vkCreate\w+)[^\n]{0,160}\b(?:failed|failure|initialization error)\b",
+        "native_translation_failure_observed": r"(?:native[ _-]?bridge|libndk_translation|ndk[ _-]?translation|Houdini|binary translation)[^\n]{0,160}\b(?:error|failed|failure|unsupported|cannot|unable)\b|\b(?:failed|unable|cannot)[^\n]{0,100}(?:native[ _-]?bridge|libndk_translation|Houdini)",
+        "explicit_unity_quit_observed": r"\b(?:Application\.Quit|UnityPlayer\.quit|UnityQuit)\b|\bUnity[^\n]{0,100}\b(?:quitting|quit requested|request(?:ing|ed)? quit|quit application)\b",
+        "virtual_environment_rejection_observed": r"\b(?:emulator|virtual (?:environment|device)|virtualized environment)\b[^\n]{0,140}\b(?:not supported|unsupported|rejected|denied|disallowed|not allowed|blocked)\b",
+        "integrity_failure_observed": r"(?:Play[ _-]?Integrity|Integrity API|integrity[ _-]?(?:check|verdict|verification)|SafetyNet)[^\n]{0,160}\b(?:failed|failure|error|rejected|not met|denied|invalid|unavailable)\b|\b(?:failed|invalid|rejected)[^\n]{0,80}(?:Play Integrity|integrity verification|integrity check)",
+    }
+    return {key: bool(re.search(pattern, logs, re.I)) for key, pattern in patterns.items()}
+
+
 def launch_game(activity, output_directory, *, network_mode="offline"):
     validate_startup_network(network_mode)
     if network_mode == "offline":
@@ -503,30 +580,30 @@ def launch_game(activity, output_directory, *, network_mode="offline"):
     if code != 0 or "Error:" in output or "Error type" in output or "Status: timeout" in output:
         raise CompatError("activity_launch_failed", command_failure_detail("adb-am-start", code, output, errors))
     first_pid = process_id()
-    time.sleep(30)
+    time.sleep(2)
+    early_alive, early_package = process_id() is not None, foreground_package()
+    early_network_allowed = network_mode == "online" or offline_status()["verified"]
+    early_screenshot = early_alive and early_package == PACKAGE and early_network_allowed and game_screenshot(output_directory, "early-startup-game.png")
+    time.sleep(28)
     alive, active_package = process_id() is not None, foreground_package()
     focused = active_package == PACKAGE
     after = offline_status() if network_mode == "offline" else None
     result = {"attempted": True, "process_alive_after_30s": alive, "app_foreground": focused,
               "startup_network": network_mode, "offline_after_launch": after, "screenshot_saved": False,
               "foreground_package": active_package,
-              "error_categories": {"process_exited": not alive, "native_crash_observed": False,
-                                   "linker_error_observed": False, "java_crash_observed": False,
-                                   "anr_observed": False}, "filtered_logcat_inspected": False}
+              "process_alive_after_2s": early_alive, "early_foreground_package": early_package,
+              "early_screenshot_saved": bool(early_screenshot), "latest_exit_info": latest_exit_info(),
+              "sdk_graphics": sdk_graphics_summary(),
+              "error_categories": {"process_exited": not alive, **log_error_categories("")},
+              "filtered_logcat_inspected": False}
     if first_pid:
         code, logs, _ = adb("logcat", "-d", "--pid=" + first_pid, "-t", "300", "-v", "brief")
         if code == 0:
             result["filtered_logcat_inspected"] = True
-            for key, pattern in [("native_crash_observed", r"Fatal signal|tombstoned"),
-                                 ("linker_error_observed", r"UnsatisfiedLinkError|dlopen failed"),
-                                 ("java_crash_observed", r"FATAL EXCEPTION"), ("anr_observed", r"ANR in")]:
-                result["error_categories"][key] = bool(re.search(pattern, logs))
+            result["error_categories"].update(log_error_categories(logs))
             del logs  # No raw game/system logs in the report or artifact.
     if (network_mode == "online" or after["verified"]) and alive and focused:
-        code, png, _ = command(["adb", "-s", SERIAL, "exec-out", "screencap", "-p"], binary=True)
-        if code == 0 and png.startswith(b"\x89PNG\r\n\x1a\n") and len(png) <= 4 * 1024 * 1024 and foreground():
-            (output_directory / "startup-game.png").write_bytes(png)
-            result["screenshot_saved"] = True
+        result["screenshot_saved"] = game_screenshot(output_directory, "startup-game.png")
     return result
 
 
@@ -553,6 +630,7 @@ def initial_report():
             "notes": ["A running process does not establish full game functionality or verified authentication.",
                       "Online mode permits normal initial startup without account input or login interaction; automatic guest/network behavior is unverified.",
                       "Published SHA1 metadata is not a substitute for the mandatory publisher APK signature verification.",
+                      "Log categories are observed markers and do not by themselves establish the cause of process exit.",
                       "Only bounded observations are published; no APK, raw logs, XML or account data."]}
 
 

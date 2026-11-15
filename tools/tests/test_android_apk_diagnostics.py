@@ -179,14 +179,14 @@ class StartupNetworkTests(unittest.TestCase):
         self.assertEqual(offline_calls, 0)
         self.assertIsNone(observed["offline_after_launch"])
         self.assertTrue(observed["process_alive_after_30s"] and observed["app_foreground"])
-        self.assertEqual(captures, 1)
+        self.assertEqual(captures, 2)
         self.assertTrue(screenshot)
 
     def test_offline_startup_still_disables_and_verifies_network(self):
         prepared, observed, disable_calls, offline_calls, _, _ = self.observe_startup("offline")
         self.assertTrue(prepared["verified"])
         self.assertEqual(disable_calls, 1)
-        self.assertEqual(offline_calls, 2)
+        self.assertEqual(offline_calls, 3)
         self.assertTrue(observed["offline_after_launch"]["verified"])
 
     def test_online_screenshot_is_not_captured_outside_own_foreground(self):
@@ -241,6 +241,90 @@ class StartupNetworkTests(unittest.TestCase):
             self.assertTrue(report["game_installed"])
             self.assertIsNone(report["game_authenticated"])
             self.assertFalse(report["game_authentication_verified"])
+
+
+class ExitAndLaunchDiagnosticsTests(unittest.TestCase):
+    def test_latest_exit_info_returns_only_numeric_latest_fields(self):
+        output = ("Historical Process Exit for com.axlebolt.standoff2:\n"
+                  "  ApplicationExitInfo #0:\n"
+                  "    timestamp=private process=com.axlebolt.standoff2 reason=2 (SIGNALED) subreason=0 (UNKNOWN) status=9\n"
+                  "    description=private diagnostic token=never-return\n"
+                  "  ApplicationExitInfo #1:\n"
+                  "    process=com.axlebolt.standoff2 reason=6 (ANR) subreason=7 status=0\n")
+        self.assertEqual(probe.parse_latest_exit_info(output), {"parsed": True, "reason": 2, "status": 9, "subreason": 0})
+        absent_subreason = "ApplicationExitInfo #0:\n process=com.axlebolt.standoff2 reason=1 (EXIT_SELF) status=0\n"
+        self.assertEqual(probe.parse_latest_exit_info(absent_subreason), {"parsed": True, "reason": 1, "status": 0, "subreason": None})
+
+    def test_unknown_oversized_or_ambiguous_exit_info_does_not_invent_a_reason(self):
+        for output in ("Permission denied", "ApplicationExitInfo #1:\n reason=2 status=9\n",
+                       "ApplicationExitInfo #0:\n reason=2 reason=6 status=9\n", "x" * 65537):
+            with self.subTest(output=output[:70]):
+                self.assertEqual(probe.parse_latest_exit_info(output), {"parsed": False, "reason": None, "status": None, "subreason": None})
+
+    def test_fixed_log_categories_detect_resource_graphics_translation_and_quit_markers(self):
+        samples = {
+            "missing_game_assets_observed": ["OBB expansion file main.203982.com.axlebolt.standoff2.obb missing",
+                "Unable to open /storage/emulated/0/Android/obb/com.axlebolt.standoff2/main.203982.com.axlebolt.standoff2.obb",
+                "Unity data not found at assets/bin/Data", "No OBB files found", "OBB path is empty"],
+            "graphics_initialization_failure_observed": ["Failed to initialize Vulkan device", "EGL_BAD_ALLOC"],
+            "native_translation_failure_observed": ["libndk_translation: native bridge failed to load"],
+            "explicit_unity_quit_observed": ["Unity: Application.Quit() requested"],
+            "virtual_environment_rejection_observed": ["emulator environment is not supported"],
+            "integrity_failure_observed": ["Play Integrity verification failed"],
+        }
+        for category, messages in samples.items():
+            for message in messages:
+                with self.subTest(category=category, message=message):
+                    result = probe.log_error_categories(message + "\nprivate-token=never-return")
+                    self.assertTrue(result[category])
+                    self.assertTrue(all(isinstance(value, bool) for value in result.values()))
+                    self.assertNotIn("never-return", str(result))
+        benign = "Vulkan initialized successfully; OBB expansion loaded; emulator detected; Play Integrity passed"
+        self.assertFalse(any(probe.log_error_categories(benign).values()))
+
+    def test_early_screenshot_survives_later_process_exit_and_uses_2_plus_28_second_wait(self):
+        with tempfile.TemporaryDirectory(prefix="early-startup-test-") as temporary:
+            directory = Path(temporary)
+            with patch.object(probe, "adb", return_value=(0, "Status: ok", "")), patch.object(
+                    probe, "process_id", side_effect=["123", "123", "123", "123", None]), patch.object(
+                    probe, "foreground_package", side_effect=[probe.PACKAGE, probe.PACKAGE, probe.PACKAGE, "com.google.android.apps.nexuslauncher"]), patch.object(
+                    probe.time, "sleep") as sleep, patch.object(probe, "latest_exit_info", return_value={"parsed": True, "reason": 1, "status": 0, "subreason": 0}), patch.object(
+                    probe, "sdk_graphics_summary", return_value={}), patch.object(
+                    probe, "command", return_value=(0, b"\x89PNG\r\n\x1a\nfixture", b"")):
+                result = probe.launch_game("com.unity3d.player.UnityPlayerActivity", directory, network_mode="online")
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 28])
+            self.assertTrue(result["early_screenshot_saved"])
+            self.assertFalse(result["process_alive_after_30s"])
+            self.assertFalse(result["screenshot_saved"])
+            self.assertTrue((directory / "early-startup-game.png").exists())
+            self.assertFalse((directory / "startup-game.png").exists())
+
+    def test_screenshot_guard_requires_own_foreground_and_live_process_before_and_after_capture(self):
+        with tempfile.TemporaryDirectory(prefix="screen-guard-test-") as temporary:
+            directory = Path(temporary)
+            with patch.object(probe, "process_id", return_value=None), patch.object(probe, "command") as capture:
+                self.assertFalse(probe.game_screenshot(directory, "early-startup-game.png"))
+                capture.assert_not_called()
+            with patch.object(probe, "process_id", return_value="123"), patch.object(
+                    probe, "foreground", return_value=False), patch.object(probe, "command") as capture:
+                self.assertFalse(probe.game_screenshot(directory, "early-startup-game.png"))
+                capture.assert_not_called()
+            with patch.object(probe, "process_id", return_value="123"), patch.object(
+                    probe, "foreground", side_effect=[True, False]), patch.object(
+                    probe, "command", return_value=(0, b"\x89PNG\r\n\x1a\nfixture", b"")):
+                self.assertFalse(probe.game_screenshot(directory, "early-startup-game.png"))
+            self.assertFalse((directory / "early-startup-game.png").exists())
+
+    def test_graphics_summary_is_fixed_property_only_and_bounded(self):
+        def adb(*args, **kwargs):
+            if args[-1] == "ro.opengles.version":
+                return 1, "", "unavailable"
+            return 0, "x" * 300, ""
+        with patch.object(probe, "adb", side_effect=adb) as calls:
+            result = probe.sdk_graphics_summary()
+        self.assertIsNone(result["opengles_version"])
+        self.assertTrue(all(value is None or len(value.encode()) <= 128 for value in result.values()))
+        self.assertTrue(all(call.args[:2] == ("shell", "getprop") for call in calls.call_args_list))
 
 
 if __name__ == "__main__":

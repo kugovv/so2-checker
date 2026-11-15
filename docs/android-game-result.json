@@ -1,0 +1,38 @@
+{
+  "run_url": "https://github.com/kugovv/so2-checker/actions/runs/43718715380",
+  "commit": "21d851bf98fdd52881f0209d366d83c0153b0812",
+  "updated_utc": "2026-11-15T13:25:48.891300+00:00",
+  "startup_network": "online",
+  "actual_sha256": "d563f9646f6c4dee94e905026cc6608fd01716f9767eac4dbf38a0b2ffd65bff",
+  "authenticity_gate": {
+    "method": "apksigner_verified_publisher_certificate_sha256",
+    "expected_certificate_sha256": "cd2902a2cf385491759513a10174cc7198f8e08b6db7756e1f8ae2e3a1b2063d",
+    "verified": true
+  },
+  "game_installed": true,
+  "launch_attempted": true,
+  "launch": {
+    "attempted": true,
+    "process_alive_after_30s": false,
+    "app_foreground": false,
+    "startup_network": "online",
+    "offline_after_launch": null,
+    "screenshot_saved": false,
+    "foreground_package": "com.google.android.apps.nexuslauncher",
+    "error_categories": {
+      "process_exited": true,
+      "native_crash_observed": false,
+      "linker_error_observed": false,
+      "java_crash_observed": false,
+      "anr_observed": false
+    },
+    "filtered_logcat_inspected": true
+  },
+  "game_authenticated": null,
+  "game_authentication_verified": false,
+  "account_login_attempted": false,
+  "guest_authentication_requested": null,
+  "data_source_ready": false,
+  "failure_category": "game_process_exited",
+  "failure_detail": null
+}
