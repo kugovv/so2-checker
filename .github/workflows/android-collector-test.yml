@@ -1,0 +1,80 @@
+name: Manual Android boot test (no game login)
+
+# A short development test on a fresh GitHub VM. No scheduler, game APK,
+# credentials, Android state cache, or production collector is configured.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-collector-boot-test
+  cancel-in-progress: true
+
+jobs:
+  android-boot:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the public source without persisting credentials
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record runner capacity and require an ephemeral GitHub VM
+        run: python3 tools/android-runner-report.py --phase before
+
+      - name: Enable this ephemeral runner's KVM access if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_ACTIONS:-}" == "true" ]]
+          [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]
+          [[ "${RUNNER_OS:-}" == "Linux" ]]
+          [[ -c /dev/kvm ]]
+          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+            sudo chmod a+rw /dev/kvm
+          fi
+          [[ -r /dev/kvm && -w /dev/kvm ]]
+
+      - name: Boot a headless Android 35 image and collect bounded observations
+        id: emulator
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 4096M
+          heap-size: 512M
+          disk-size: 2G
+          avd-name: collector-boot-test
+          force-avd-creation: true
+          channel: stable
+          emulator-boot-timeout: 600
+          disable-linux-hw-accel: false
+          disable-animations: true
+          # Current Android documentation recommends -gpu software; the older
+          # swiftshader_indirect mode used by the action's default is deprecated.
+          emulator-options: -no-window -gpu software -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -accel on
+          script: python3 tools/android-runner-report.py --phase android
+
+      - name: Record disk and memory after the emulator stops
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        env:
+          ANDROID_EMULATOR_STEP_OUTCOME: ${{ steps.emulator.outcome }}
+        run: python3 tools/android-runner-report.py --phase after
+
+      - name: Keep only the small public report for one day
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-boot-report
+          path: artifacts/android-runner/report.json
+          retention-days: 1
+          if-no-files-found: warn
+          compression-level: 6

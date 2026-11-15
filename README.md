@@ -40,6 +40,12 @@ python -m venv .venv
 
 Обновление интерфейса — push проверенного кода в `main`; Actions пересобирает и публикует Pages. Для изменений `VITE_API_URL` требуется повторный запуск публикации.
 
+Оценка Android-сборщика: [вместимость VPS и сохраняемые проекты](docs/server-capacity.md),
+[проверенные и непроверенные способы доступа к данным](docs/data-access-audit.md).
+Ручной workflow `Manual Android boot test (no game login)` проверяет отдельный
+GitHub-hosted Android без установки игры и ввода учётных данных. Успешный boot
+не подтверждает игровую авторизацию или работоспособность источника.
+
 ## Backend и безопасность
 
 Скопировать `.env.example` в закрытый конфигурационный файл выбранного backend-хостинга. `PUBLIC_URL` — полный адрес опубликованного Mini App, `ALLOWED_ORIGINS` — его origin (например, `https://OWNER.github.io`, без подпапки). Секрет `BOT_TOKEN` хранится только на backend. `DATABASE_URL` указывает на отдельную БД с отдельной ролью.
