@@ -35,13 +35,23 @@ SOURCE_PROFILES = {
         "algorithm": "sha256", "value": "f492fe4c5ea0d5aa084ee0376a394625c7248cc96df70cbc966588337d21932a"}},
     "apkpure-203982": {"bytes": 103739086, "metadata_hash": {
         "algorithm": "sha1", "value": "67dc7c1619d32d18ea494b832091cb23b20f0c9c"}},
+    "apkpure-xapk-203982": {"format": "xapk", "bytes": 2102952039, "metadata_hash": {
+        "algorithm": "sha256", "value": "2c587b32be2e9b391902bf167526f07c177c72b4536839a9c38348815926078a"},
+        "apk_bytes": 103739086, "apk_sha256": "d563f9646f6c4dee94e905026cc6608fd01716f9767eac4dbf38a0b2ffd65bff",
+        "obb_bytes": 1999210252},
 }
 PUBLISHER_SHA256 = "cd2902a2cf385491759513a10174cc7198f8e08b6db7756e1f8ae2e3a1b2063d"
 MAX_DOWNLOAD = 160 * 1024 * 1024
 DOWNLOAD_SECONDS = 180
+XAPK_MAX_DOWNLOAD = 2200 * 1024 * 1024
+XAPK_DOWNLOAD_SECONDS = 900
 REPORT_LIMIT = 48 * 1024
 SERIAL = "emulator-5554"
 GIB = 1024 ** 3
+OBB_NAME = "main." + BUILD + "." + PACKAGE + ".obb"
+OBB_MEMBER = "Android/obb/" + PACKAGE + "/" + OBB_NAME
+DEVICE_OBB_DIRECTORY = "/sdcard/Android/obb/" + PACKAGE
+DEVICE_OBB_PATH = DEVICE_OBB_DIRECTORY + "/" + OBB_NAME
 
 
 class CompatError(Exception):
@@ -197,7 +207,8 @@ def visible_download_url(html, current_url):
 
 def download_apk(url, destination):
     profile_name, profile = source_profile()
-    deadline = time.monotonic() + DOWNLOAD_SECONDS
+    full_bundle = profile.get("format", "apk") == "xapk"
+    deadline = time.monotonic() + (XAPK_DOWNLOAD_SECONDS if full_bundle else DOWNLOAD_SECONDS)
     redirects = pages = 0
     while True:
         parsed, hostname, addresses = checked_url(url)
@@ -221,11 +232,12 @@ def download_apk(url, destination):
             if response.getheader("Content-Encoding", "identity").lower() not in ("identity", ""):
                 raise CompatError("unexpected_content_encoding")
             html = "text/html" in response.getheader("Content-Type", "").lower()
-            limit = 2 * 1024 * 1024 if html else MAX_DOWNLOAD
+            limit = 2 * 1024 * 1024 if html else XAPK_MAX_DOWNLOAD if full_bundle else MAX_DOWNLOAD
             length = response.getheader("Content-Length")
             if length and (not length.isdigit() or int(length) > limit):
                 raise CompatError("download_size_limit")
             total, chunks, digest = 0, [], hashlib.sha256()
+            progress_bucket = 0
             metadata_digest = hashlib.new(profile["metadata_hash"]["algorithm"])
             with destination.open("wb") as stream:
                 while True:
@@ -245,6 +257,9 @@ def download_apk(url, destination):
                         stream.write(chunk)
                         digest.update(chunk)
                         metadata_digest.update(chunk)
+                        if full_bundle and total // (256 * 1024 * 1024) > progress_bucket:
+                            progress_bucket = total // (256 * 1024 * 1024)
+                            print(json.dumps({"phase": "xapk_download", "received_mib": total // (1024 * 1024)}), flush=True)
             if html:
                 pages += 1
                 if pages > 2:
@@ -252,7 +267,7 @@ def download_apk(url, destination):
                 url = visible_download_url(b"".join(chunks).decode("utf-8", errors="replace"), url)
                 continue
             if total != profile["bytes"] or metadata_digest.hexdigest() != profile["metadata_hash"]["value"]:
-                raise CompatError("apk_hash_or_size_mismatch")
+                raise CompatError("xapk_hash_or_size_mismatch" if full_bundle else "apk_hash_or_size_mismatch")
             return {"source_profile": profile_name, "bytes": total, "actual_sha256": digest.hexdigest(),
                     "metadata_hash_verified": True, "redirects": redirects,
                     "visible_html_pages": pages, "source_host": hostname}
@@ -339,6 +354,60 @@ def verify_apk(path, *, signature_only=False):
     return {"package": PACKAGE, "version_code": BUILD, "abis": sorted(abis),
             "publisher_certificate_sha256": PUBLISHER_SHA256, "signature_diagnostics": diagnostic,
             "manifest_checked": True, "zip_abi_checked": True}, activity.group(1)
+
+
+def extract_source_bundle(source, destination, profile):
+    # Normal script execution already has tools/ on sys.path; spec-based unit
+    # loaders need this trusted sibling path before the same standalone import.
+    import sys
+    tools_directory = str(Path(__file__).resolve().parent)
+    if tools_directory not in sys.path:
+        sys.path.insert(0, tools_directory)
+    from android_bundle import BundleError, extract_xapk
+    try:
+        bundle = extract_xapk(source, destination, expected_apk_sha256=profile["apk_sha256"],
+                              max_total_bytes=3 * GIB, max_entries=16)
+    except BundleError as error:
+        raise CompatError("xapk_bundle_rejected", {"bundle_error": str(error)[:80]}) from None
+    destination = Path(destination).resolve()
+    if not bundle.apk_path.resolve().is_relative_to(destination) or not bundle.obb_path.resolve().is_relative_to(destination):
+        raise CompatError("xapk_extraction_path_invalid")
+    files = bundle.metadata["files"]
+    if (files[PACKAGE + ".apk"]["bytes"] != profile["apk_bytes"]
+            or files[PACKAGE + ".apk"]["sha256"] != profile["apk_sha256"]
+            or files[OBB_MEMBER]["bytes"] != profile["obb_bytes"]):
+        raise CompatError("xapk_inner_metadata_mismatch")
+    return bundle
+
+
+def bundle_report_metadata(metadata):
+    # Report only fixed archive entry names and measured hashes/byte counts;
+    # never copy local extracted paths or archive-controlled manifest fields.
+    return {"format": "xapk_v2", "extracted_bytes": metadata["extracted_bytes"],
+            "files": {name: {"bytes": metadata["files"][name]["bytes"],
+                             "sha256": metadata["files"][name]["sha256"]}
+                      for name in (PACKAGE + ".apk", OBB_MEMBER, "manifest.json")}}
+
+
+def push_verified_obb(path, expected_bytes, host_sha256):
+    if (Path(path).name != OBB_NAME or Path(path).stat().st_size != expected_bytes
+            or not isinstance(host_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", host_sha256)):
+        raise CompatError("obb_host_metadata_invalid")
+    code, output, errors = adb("shell", "mkdir", "-p", DEVICE_OBB_DIRECTORY)
+    if code != 0:
+        raise CompatError("obb_directory_unavailable", command_failure_detail("adb-obb-mkdir", code, output, errors))
+    code, output, errors = adb("push", str(path), DEVICE_OBB_PATH, timeout=300)
+    if code != 0:
+        raise CompatError("obb_push_failed", command_failure_detail("adb-obb-push", code, output, errors))
+    code, output, errors = adb("shell", "stat", "-c", "%s", DEVICE_OBB_PATH)
+    if code != 0 or not output.strip().isdigit() or int(output.strip()) != expected_bytes:
+        raise CompatError("obb_device_size_unverified", command_failure_detail("adb-obb-stat", code, output, errors))
+    code, output, errors = adb("shell", "sha256sum", DEVICE_OBB_PATH, timeout=180)
+    match = re.fullmatch(r"([0-9a-fA-F]{64})[ \t]+\*?" + re.escape(DEVICE_OBB_PATH) + r"\s*", output.strip())
+    if code != 0 or not match or match.group(1).lower() != host_sha256:
+        raise CompatError("obb_device_hash_unverified", command_failure_detail("adb-obb-sha256sum", code, output, errors))
+    return {"bytes": expected_bytes, "host_sha256": host_sha256, "device_sha256": match.group(1).lower(),
+            "size_verified": True, "sha256_verified": True}
 
 
 def command_failure_detail(tool, code, output, errors):
@@ -490,7 +559,7 @@ def prepare_startup_network(mode):
 
 
 def game_screenshot(output_directory, filename):
-    if filename not in {"startup-game.png", "early-startup-game.png"}:
+    if filename not in {"startup-game.png", "early-startup-game.png", "settled-startup-game.png"}:
         raise CompatError("invalid_screenshot_name")
     if process_id() is None or not foreground():
         return False
@@ -566,6 +635,13 @@ def log_error_categories(logs):
     return {key: bool(re.search(pattern, logs, re.I)) for key, pattern in patterns.items()}
 
 
+def configure_immersive_confirmation():
+    written = adb("shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed")
+    readback = adb("shell", "settings", "get", "secure", "immersive_mode_confirmations")
+    return {"write_succeeded": written[0] == 0, "read_succeeded": readback[0] == 0,
+            "confirmed": written[0] == 0 and readback[0] == 0 and readback[1].strip() == "confirmed"}
+
+
 def launch_game(activity, output_directory, *, network_mode="offline"):
     validate_startup_network(network_mode)
     if network_mode == "offline":
@@ -576,9 +652,12 @@ def launch_game(activity, output_directory, *, network_mode="offline"):
     # complete component for the remote Android shell, including literal '$'.
     import shlex
     component = shlex.quote(PACKAGE + "/" + activity)
+    immersive = configure_immersive_confirmation()
     code, output, errors = adb("shell", "am start -W -n " + component, timeout=60)
     if code != 0 or "Error:" in output or "Error type" in output or "Status: timeout" in output:
-        raise CompatError("activity_launch_failed", command_failure_detail("adb-am-start", code, output, errors))
+        detail = command_failure_detail("adb-am-start", code, output, errors)
+        detail["immersive_confirmation"] = immersive
+        raise CompatError("activity_launch_failed", detail)
     first_pid = process_id()
     time.sleep(2)
     early_alive, early_package = process_id() is not None, foreground_package()
@@ -591,6 +670,7 @@ def launch_game(activity, output_directory, *, network_mode="offline"):
     result = {"attempted": True, "process_alive_after_30s": alive, "app_foreground": focused,
               "startup_network": network_mode, "offline_after_launch": after, "screenshot_saved": False,
               "foreground_package": active_package,
+              "immersive_confirmation": immersive,
               "process_alive_after_2s": early_alive, "early_foreground_package": early_package,
               "early_screenshot_saved": bool(early_screenshot), "latest_exit_info": latest_exit_info(),
               "sdk_graphics": sdk_graphics_summary(),
@@ -611,12 +691,25 @@ def launch_offline(activity, output_directory):
     return launch_game(activity, output_directory, network_mode="offline")
 
 
+def settled_startup_observation(output_directory, *, network_mode):
+    validate_startup_network(network_mode)
+    time.sleep(60)
+    alive, package = process_id() is not None, foreground_package()
+    offline = offline_status() if network_mode == "offline" else None
+    screenshot = (alive and package == PACKAGE and (network_mode == "online" or offline["verified"])
+                  and game_screenshot(output_directory, "settled-startup-game.png"))
+    return {"process_alive": alive, "foreground_package": package, "app_foreground": package == PACKAGE,
+            "screenshot_saved": bool(screenshot), "offline_status": offline}
+
+
 def initial_report():
     profile_name, profile = source_profile()
     mode = startup_network()
     return {"schema_version": 1, "purpose": "signed_game_apk_online_initial_startup" if mode == "online" else "signed_game_apk_offline_compatibility",
             "startup_network": mode,
-            "source_profile": profile_name, "expected_apk_bytes": profile["bytes"],
+            "source_profile": profile_name, "source_format": profile.get("format", "apk"),
+            "expected_source_bytes": profile["bytes"], "expected_apk_bytes": profile.get("apk_bytes", profile["bytes"]),
+            "obb_required": profile.get("format", "apk") == "xapk", "obb_push_verified": False,
             "verification_only": os.environ.get("APK_VERIFY_ONLY") == "true",
             "expected_metadata_hash": profile["metadata_hash"].copy(), "actual_sha256": None,
             "expected_version_code": BUILD,
@@ -654,10 +747,17 @@ def execute(phase):
     report["updated_utc"] = datetime.now(timezone.utc).isoformat()
     status = 0
     try:
+        _, profile = source_profile()
+        full_bundle = profile.get("format", "apk") == "xapk"
+        if full_bundle and (report["verification_only"] or phase == "verify"):
+            raise CompatError("xapk_verify_only_not_supported")
         if phase == "before":
             report["host_before"] = host = host_report(root)
             if report["verification_only"]:
                 report["capacity_checks"] = {"disk_1gib_free": host["disk_bytes"]["free"] >= GIB}
+            elif full_bundle:
+                report["capacity_checks"] = {"kvm_present": host["kvm_present"], "disk_16gib_free": host["disk_bytes"]["free"] >= 16 * GIB,
+                                             "memory_6gib_available": host["memory_mib"].get("available", 0) >= 6144}
             else:
                 report["capacity_checks"] = {"kvm_present": host["kvm_present"], "disk_12gib_free": host["disk_bytes"]["free"] >= 12 * GIB,
                                              "memory_6gib_available": host["memory_mib"].get("available", 0) >= 6144}
@@ -675,9 +775,19 @@ def execute(phase):
                 # Temporary APK and its cleanup stay within the checked workspace.
                 if not Path(temporary).resolve().is_relative_to(root):
                     raise CompatError("temporary_path_outside_workspace")
-                apk = Path(temporary) / "game.apk"
-                report["download"] = download_apk(os.environ.get("APK_SOURCE_URL", ""), apk)
+                source = Path(temporary) / ("game.xapk" if full_bundle else "game.apk")
+                report["download"] = download_apk(os.environ.get("APK_SOURCE_URL", ""), source)
                 report["actual_sha256"] = report["download"]["actual_sha256"]
+                apk, bundle = source, None
+                if full_bundle:
+                    if (report["download"].get("bytes") != profile["bytes"]
+                            or report["download"]["actual_sha256"] != profile["metadata_hash"]["value"]
+                            or report["download"].get("metadata_hash_verified") is not True):
+                        raise CompatError("xapk_outer_integrity_unverified")
+                    bundle = extract_source_bundle(source, Path(temporary) / "extracted", profile)
+                    report["bundle_extraction"] = bundle_report_metadata(bundle.metadata)
+                    apk = bundle.apk_path
+                    report["actual_apk_sha256"] = bundle.metadata["files"][PACKAGE + ".apk"]["sha256"]
                 report["verified_apk"], activity = verify_apk(apk, signature_only=phase == "verify")
                 report["authenticity_gate"]["verified"] = True
                 if phase == "game":
@@ -689,15 +799,29 @@ def execute(phase):
                     if code != 0 or "Success" not in output:
                         raise CompatError("apk_install_failed", command_failure_detail("adb-install", code, output, errors))
                     report["game_installed"] = True
+                    if bundle is not None:
+                        obb = bundle.metadata["files"][OBB_MEMBER]
+                        report["obb_transfer"] = push_verified_obb(bundle.obb_path, obb["bytes"], obb["sha256"])
+                        report["obb_push_verified"] = True
                     if os.environ.get("ALLOW_OFFLINE_LAUNCH") == "true":
                         report["launch_attempted"] = True
                         report["launch"] = launch_game(activity, directory, network_mode=mode)
+                        if full_bundle:
+                            report["settled_after_90s"] = settled_startup_observation(directory, network_mode=mode)
                         if mode == "offline" and not report["launch"]["offline_after_launch"]["verified"]:
                             raise CompatError("offline_not_verified_after_launch")
                         if not report["launch"]["process_alive_after_30s"]:
                             raise CompatError("game_process_exited")
                         if not report["launch"]["app_foreground"]:
                             raise CompatError("game_not_foreground")
+                        if full_bundle:
+                            settled = report["settled_after_90s"]
+                            if mode == "offline" and not settled["offline_status"]["verified"]:
+                                raise CompatError("offline_not_verified_after_90s")
+                            if not settled["process_alive"]:
+                                raise CompatError("game_process_exited_after_90s")
+                            if not settled["app_foreground"]:
+                                raise CompatError("game_not_foreground_after_90s")
         elif phase == "after":
             report["host_after"] = host_report(root)
             outcome = os.environ.get("COMPAT_EMULATOR_OUTCOME", "unknown")

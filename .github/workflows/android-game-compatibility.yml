@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: Public HTTPS APK URL or the verified APKMirror variant page
+        description: Public HTTPS APK/XAPK URL or the verified APKMirror variant page
         required: true
         type: string
       source_profile:
@@ -15,6 +15,7 @@ on:
         options:
           - apkmirror-203982
           - apkpure-203982
+          - apkpure-xapk-203982
       launch_offline:
         description: Launch the application once in the selected network mode
         required: true
@@ -59,7 +60,7 @@ jobs:
       - name: Verify ephemeral runner and record capacity
         run: python3 tools/android-game-compat.py --phase before
       - name: Check certificate formats, network modes and route diagnostics
-        run: python3 -m unittest discover -s tools/tests -p test_android_apk_diagnostics.py -v
+        run: python3 -m unittest discover -s tools/tests -p 'test_android_*.py' -v
       - name: Diagnose APK signature on the host without booting Android
         id: verifier
         if: ${{ inputs.verify_only }}
@@ -118,6 +119,7 @@ jobs:
             artifacts/android-game-compat/report.json
             artifacts/android-game-compat/startup-game.png
             artifacts/android-game-compat/early-startup-game.png
+            artifacts/android-game-compat/settled-startup-game.png
           retention-days: 1
           if-no-files-found: warn
           compression-level: 6

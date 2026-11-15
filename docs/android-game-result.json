@@ -1,7 +1,8 @@
 {
-  "run_url": "https://github.com/kugovv/so2-checker/actions/runs/43718715380",
-  "commit": "21d851bf98fdd52881f0209d366d83c0153b0812",
-  "updated_utc": "2026-11-15T13:25:48.891300+00:00",
+  "run_url": "https://github.com/kugovv/so2-checker/actions/runs/43719718695",
+  "commit": "0ec572d92f18734d83a856d1270e26bf1fcb0b5f",
+  "screen_observation": "Android full-screen help overlay over black game window; actual game menu not verified",
+  "updated_utc": "2026-11-15T13:37:36.489485+00:00",
   "startup_network": "online",
   "actual_sha256": "d563f9646f6c4dee94e905026cc6608fd01716f9767eac4dbf38a0b2ffd65bff",
   "authenticity_gate": {
@@ -13,18 +14,40 @@
   "launch_attempted": true,
   "launch": {
     "attempted": true,
-    "process_alive_after_30s": false,
-    "app_foreground": false,
+    "process_alive_after_30s": true,
+    "app_foreground": true,
     "startup_network": "online",
     "offline_after_launch": null,
-    "screenshot_saved": false,
-    "foreground_package": "com.google.android.apps.nexuslauncher",
+    "screenshot_saved": true,
+    "foreground_package": "com.axlebolt.standoff2",
+    "process_alive_after_2s": true,
+    "early_foreground_package": "com.axlebolt.standoff2",
+    "early_screenshot_saved": false,
+    "latest_exit_info": {
+      "query_succeeded": true,
+      "parsed": false,
+      "reason": null,
+      "status": null,
+      "subreason": null
+    },
+    "sdk_graphics": {
+      "hardware_egl": "emulation",
+      "opengles_version": "196608",
+      "abi_list": "x86_64,arm64-v8a",
+      "native_bridge": "libndk_translation.so"
+    },
     "error_categories": {
-      "process_exited": true,
+      "process_exited": false,
       "native_crash_observed": false,
       "linker_error_observed": false,
       "java_crash_observed": false,
-      "anr_observed": false
+      "anr_observed": false,
+      "missing_game_assets_observed": false,
+      "graphics_initialization_failure_observed": true,
+      "native_translation_failure_observed": false,
+      "explicit_unity_quit_observed": false,
+      "virtual_environment_rejection_observed": false,
+      "integrity_failure_observed": false
     },
     "filtered_logcat_inspected": true
   },
@@ -33,6 +56,6 @@
   "account_login_attempted": false,
   "guest_authentication_requested": null,
   "data_source_ready": false,
-  "failure_category": "game_process_exited",
+  "failure_category": null,
   "failure_detail": null
 }

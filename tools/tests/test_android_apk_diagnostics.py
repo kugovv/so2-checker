@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -243,7 +244,166 @@ class StartupNetworkTests(unittest.TestCase):
             self.assertFalse(report["game_authentication_verified"])
 
 
+class XapkStartupOrderingTests(unittest.TestCase):
+    def run_fixture(self, failure=None):
+        """Synthetic tiny files and mocked Android; never download or run a game."""
+        events = []
+        profile = probe.SOURCE_PROFILES["apkpure-xapk-203982"]
+        obb_data = b"tiny synthetic OBB fixture"
+        obb_sha256 = probe.hashlib.sha256(obb_data).hexdigest()
+        with tempfile.TemporaryDirectory(prefix="xapk-order-test-") as temporary:
+            root = Path(temporary).resolve()
+
+            def download(url, destination):
+                events.append("download-hash")
+                return {"bytes": profile["bytes"], "metadata_hash_verified": True,
+                        "actual_sha256": "0" * 64 if failure == "hash" else profile["metadata_hash"]["value"]}
+
+            def extract(source, destination, selected_profile):
+                events.append("extract")
+                destination.mkdir()
+                apk = destination / (probe.PACKAGE + ".apk")
+                apk.write_bytes(b"synthetic APK fixture")
+                obb = destination / probe.OBB_NAME
+                obb.write_bytes(obb_data)
+                return SimpleNamespace(apk_path=apk, obb_path=obb, metadata={
+                    "extracted_bytes": len(obb_data) + 30,
+                    "files": {probe.PACKAGE + ".apk": {"bytes": 21, "sha256": profile["apk_sha256"]},
+                              probe.OBB_MEMBER: {"bytes": len(obb_data), "sha256": obb_sha256},
+                              "manifest.json": {"bytes": 9, "sha256": "a" * 64}}})
+
+            def verify(path, **kwargs):
+                events.append("publisher-signature-manifest-abi")
+                self.assertTrue(Path(path).is_file())
+                if failure == "signature":
+                    raise probe.CompatError("publisher_signature_mismatch")
+                return {"package": probe.PACKAGE, "manifest_checked": True, "zip_abi_checked": True}, "Activity"
+
+            def adb(*args, **kwargs):
+                if args[:2] == ("shell", "getprop"):
+                    return 0, "1\n", ""
+                if args[0] == "install":
+                    events.append("install")
+                    return 0, "Success\n", ""
+                if args[:2] == ("shell", "mkdir"):
+                    self.assertEqual(args[-1], probe.DEVICE_OBB_DIRECTORY)
+                    events.append("own-obb-directory")
+                    return 0, "", ""
+                if args[0] == "push":
+                    self.assertEqual(args[-1], probe.DEVICE_OBB_PATH)
+                    events.append("obb-push")
+                    return 0, "1 file pushed", ""
+                if args[:2] == ("shell", "stat"):
+                    events.append("device-size")
+                    return 0, str(len(obb_data)), ""
+                if args[:2] == ("shell", "sha256sum"):
+                    events.append("device-sha256")
+                    digest = "0" * 64 if failure == "checksum" else obb_sha256
+                    return 0, digest + "  " + probe.DEVICE_OBB_PATH + "\n", ""
+                raise AssertionError("Unexpected Android command")
+
+            def launch(*args, **kwargs):
+                events.append("launch")
+                return {"process_alive_after_30s": True, "app_foreground": True, "offline_after_launch": None}
+
+            def settled(*args, **kwargs):
+                events.append("settled-90s")
+                return {"process_alive": True, "app_foreground": True, "offline_status": None, "screenshot_saved": False}
+
+            with patch.dict(os.environ, {"GAME_STARTUP_NETWORK": "online", "ALLOW_OFFLINE_LAUNCH": "true",
+                                        "APK_SOURCE_PROFILE": "apkpure-xapk-203982", "APK_VERIFY_ONLY": "false"}), patch.object(
+                    probe, "guard", return_value=root), patch.object(probe, "host_report", return_value={}), patch.object(
+                    probe, "emulator_package_version", return_value="test"), patch.object(
+                    probe, "download_apk", side_effect=download), patch.object(probe, "extract_source_bundle", side_effect=extract), patch.object(
+                    probe, "verify_apk", side_effect=verify), patch.object(probe, "adb", side_effect=adb), patch.object(
+                    probe, "launch_game", side_effect=launch), patch.object(
+                    probe, "settled_startup_observation", side_effect=settled), patch("builtins.print"):
+                status = probe.execute("game")
+            return status, json.loads((root / "artifacts/android-game-compat/report.json").read_text()), events
+
+    def test_outer_hash_signature_install_and_verified_obb_transfer_precede_launch(self):
+        status, report, events = self.run_fixture()
+        self.assertEqual(status, 0)
+        self.assertEqual(events, ["download-hash", "extract", "publisher-signature-manifest-abi", "install",
+                                  "own-obb-directory", "obb-push", "device-size", "device-sha256", "launch", "settled-90s"])
+        self.assertTrue(report["obb_push_verified"])
+        self.assertEqual(report["source_format"], "xapk")
+        self.assertEqual(report["expected_source_bytes"], 2102952039)
+        self.assertEqual(report["expected_apk_bytes"], 103739086)
+        self.assertNotIn("path", str(report["bundle_extraction"]).lower())
+        self.assertIsNone(report["game_authenticated"])
+        self.assertFalse(report["data_source_ready"])
+
+    def test_failed_outer_hash_prevents_extraction_signature_and_install(self):
+        status, report, events = self.run_fixture("hash")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_category"], "xapk_outer_integrity_unverified")
+        self.assertEqual(events, ["download-hash"])
+        self.assertFalse(report["game_installed"])
+
+    def test_failed_publisher_signature_prevents_install_obb_push_and_launch(self):
+        status, report, events = self.run_fixture("signature")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_category"], "publisher_signature_mismatch")
+        self.assertNotIn("install", events)
+        self.assertNotIn("obb-push", events)
+        self.assertNotIn("launch", events)
+        self.assertFalse(report["authenticity_gate"]["verified"])
+
+    def test_device_obb_checksum_mismatch_prevents_launch(self):
+        status, report, events = self.run_fixture("checksum")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_category"], "obb_device_hash_unverified")
+        self.assertTrue(report["game_installed"])
+        self.assertFalse(report["obb_push_verified"])
+        self.assertFalse(report["launch_attempted"])
+        self.assertNotIn("launch", events)
+
+    def test_full_bundle_verify_only_is_rejected_without_download(self):
+        with tempfile.TemporaryDirectory(prefix="xapk-verify-test-") as temporary:
+            root = Path(temporary).resolve()
+            with patch.dict(os.environ, {"APK_SOURCE_PROFILE": "apkpure-xapk-203982", "APK_VERIFY_ONLY": "true"}), patch.object(
+                    probe, "guard", return_value=root), patch.object(probe, "download_apk") as download, patch("builtins.print"):
+                self.assertEqual(probe.execute("verify"), 1)
+            download.assert_not_called()
+            report = json.loads((root / "artifacts/android-game-compat/report.json").read_text())
+            self.assertEqual(report["failure_category"], "xapk_verify_only_not_supported")
+
+    def test_full_bundle_capacity_requires_16gib_disk_and_6gib_available_memory(self):
+        for disk, memory, expected in ((15, 8192, 1), (16, 6143, 1), (16, 6144, 0)):
+            with self.subTest(disk=disk, memory=memory), tempfile.TemporaryDirectory(prefix="xapk-capacity-test-") as temporary:
+                root = Path(temporary).resolve()
+                host = {"disk_bytes": {"free": disk * probe.GIB}, "memory_mib": {"available": memory}, "kvm_present": True}
+                with patch.dict(os.environ, {"APK_SOURCE_PROFILE": "apkpure-xapk-203982", "APK_VERIFY_ONLY": "false"}), patch.object(
+                        probe, "guard", return_value=root), patch.object(probe, "host_report", return_value=host), patch("builtins.print"):
+                    self.assertEqual(probe.execute("before"), expected)
+
+
 class ExitAndLaunchDiagnosticsTests(unittest.TestCase):
+    def test_settled_checkpoint_waits_only_extra_60s_and_keeps_own_app_guard(self):
+        for own_foreground in (True, False):
+            with self.subTest(own_foreground=own_foreground), patch.object(probe.time, "sleep") as sleep, patch.object(
+                    probe, "process_id", return_value="123"), patch.object(
+                    probe, "foreground_package", return_value=probe.PACKAGE if own_foreground else "com.android.launcher"), patch.object(
+                    probe, "offline_status", side_effect=AssertionError("online observation must not enforce offline")), patch.object(
+                    probe, "game_screenshot", return_value=True) as screenshot:
+                result = probe.settled_startup_observation(Path("unused"), network_mode="online")
+            sleep.assert_called_once_with(60)
+            self.assertEqual(result["screenshot_saved"], own_foreground)
+            self.assertEqual(screenshot.call_count, 1 if own_foreground else 0)
+
+    def test_immersive_confirmation_is_changed_only_via_fixed_setting_and_verified(self):
+        with patch.object(probe, "adb", side_effect=[(0, "", ""), (0, "confirmed\n", "")]) as adb:
+            result = probe.configure_immersive_confirmation()
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(adb.call_args_list[0].args, ("shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed"))
+        self.assertEqual(adb.call_args_list[1].args, ("shell", "settings", "get", "secure", "immersive_mode_confirmations"))
+        for written, readback in (((1, "", "denied"), (0, "confirmed", "")), ((0, "", ""), (0, "null", ""))):
+            with patch.object(probe, "adb", side_effect=[written, readback]):
+                result = probe.configure_immersive_confirmation()
+                self.assertFalse(result["confirmed"])
+                self.assertTrue(all(isinstance(value, bool) for value in result.values()))
+
     def test_latest_exit_info_returns_only_numeric_latest_fields(self):
         output = ("Historical Process Exit for com.axlebolt.standoff2:\n"
                   "  ApplicationExitInfo #0:\n"
