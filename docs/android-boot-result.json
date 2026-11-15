@@ -1,0 +1,21 @@
+{
+  "checked_on": "2026-11-15",
+  "run_url": "https://github.com/kugovv/so2-checker/actions/runs/43712708196",
+  "commit": "ad4fed18a17c128e01f9bed17740bc5db98246ad",
+  "boot_test_passed": true,
+  "runner_cpu_cores": 4,
+  "runner_memory_mib": 15983,
+  "runner_initial_free_disk_bytes": 91530018816,
+  "android_api_level": 35,
+  "android_configured_memory_mib": 4096,
+  "android_abis": ["x86_64", "arm64-v8a"],
+  "android_native_bridge": "libndk_translation.so",
+  "google_play_services_package_present": true,
+  "google_play_store_package_present": true,
+  "disk_bytes_used_delta": 4067680256,
+  "game_installed": false,
+  "game_authenticated": false,
+  "data_source_ready": false,
+  "account_login_attempted": false,
+  "persistent_android_host": false
+}

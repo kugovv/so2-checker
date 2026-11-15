@@ -45,6 +45,9 @@ python -m venv .venv
 Ручной workflow `Manual Android boot test (no game login)` проверяет отдельный
 GitHub-hosted Android без установки игры и ввода учётных данных. Успешный boot
 не подтверждает игровую авторизацию или работоспособность источника.
+Следующий ручной тест `Manual signed game APK offline compatibility`
+проверяет точную подпись APK и его офлайн-запуск. Учётные данные в эти
+workflows не передаются; никакой из тестов не является production-сборщиком.
 
 ## Backend и безопасность
 

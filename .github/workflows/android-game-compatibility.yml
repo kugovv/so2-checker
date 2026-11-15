@@ -1,0 +1,86 @@
+name: Manual signed game APK offline compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: Public HTTPS APK URL or the verified APKMirror variant page
+        required: true
+        type: string
+      launch_offline:
+        description: Launch only after verified Android airplane mode and no default route
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-game-compatibility
+  cancel-in-progress: true
+
+jobs:
+  offline-compatibility:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source without persisting credentials
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify ephemeral runner and record capacity
+        run: python3 tools/android-game-compat.py --phase before
+      - name: Enable KVM only on the ephemeral GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_ACTIONS:-}" == "true" ]]
+          [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]
+          [[ "${RUNNER_OS:-}" == "Linux" ]]
+          [[ -c /dev/kvm ]]
+          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+            sudo chmod a+rw /dev/kvm
+          fi
+          [[ -r /dev/kvm && -w /dev/kvm ]]
+      - name: Verify signed APK and test its native launch offline
+        id: emulator
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          APK_SOURCE_URL: ${{ inputs.apk_url }}
+          ALLOW_OFFLINE_LAUNCH: ${{ inputs.launch_offline }}
+        with:
+          api-level: 35
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 4096M
+          heap-size: 512M
+          disk-size: 6G
+          avd-name: signed-game-offline-test
+          force-avd-creation: true
+          channel: stable
+          emulator-boot-timeout: 600
+          disable-linux-hw-accel: false
+          disable-animations: true
+          emulator-options: -no-window -gpu software -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -accel on
+          script: python3 tools/android-game-compat.py --phase game
+      - name: Record final resource usage
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        env:
+          COMPAT_EMULATOR_OUTCOME: ${{ steps.emulator.outcome }}
+        run: python3 tools/android-game-compat.py --phase after
+      - name: Keep the bounded report and optional offline game screen for one day
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-game-offline-compatibility
+          path: |
+            artifacts/android-game-compat/report.json
+            artifacts/android-game-compat/offline-game.png
+          retention-days: 1
+          if-no-files-found: warn
+          compression-level: 6
