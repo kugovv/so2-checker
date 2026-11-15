@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One ephemeral signed-APK/offline-launch test; never enters an account.
+"""One ephemeral signed-APK initial-startup test; never enters an account.
 
 Only fixed per-source file metadata/build and the publisher signing certificate
 are accepted. APKPure's published SHA1 is a metadata check, never a substitute
@@ -56,6 +56,16 @@ def source_profile():
     if name not in SOURCE_PROFILES:
         raise CompatError("unknown_source_profile")
     return name, SOURCE_PROFILES[name]
+
+
+def validate_startup_network(mode):
+    if mode not in {"offline", "online"}:
+        raise CompatError("unknown_startup_network")
+    return mode
+
+
+def startup_network():
+    return validate_startup_network(os.environ.get("GAME_STARTUP_NETWORK", "offline"))
 
 
 def guard() -> Path:
@@ -445,9 +455,23 @@ def process_id():
     return output.split()[0] if code == 0 and re.fullmatch(r"\d+(?:\s+\d+)*\s*", output) else None
 
 
-def foreground():
+def foreground_package():
     code, output, _ = adb("shell", "dumpsys", "activity", "activities")
-    return code == 0 and bool(re.search(r"(?:mResumedActivity|topResumedActivity)[^\n]*" + re.escape(PACKAGE) + r"/", output))
+    if code != 0:
+        return None
+    package_pattern = r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)/"
+    for label in ("topResumedActivity", "mResumedActivity"):
+        candidates = set(re.findall(label + r"[^\n]*?[ \t]" + package_pattern, output))
+        if candidates:
+            if len(candidates) != 1:
+                return None
+            package = next(iter(candidates))
+            return package if len(package) <= 255 else None
+    return None
+
+
+def foreground():
+    return foreground_package() == PACKAGE
 
 
 def emulator_package_version():
@@ -458,10 +482,19 @@ def emulator_package_version():
         return None
 
 
-def launch_offline(activity, output_directory):
-    before = offline_status()
-    if not before["verified"]:
-        raise CompatError("offline_not_verified_before_launch")
+def prepare_startup_network(mode):
+    validate_startup_network(mode)
+    if mode == "offline":
+        return disable_android_network()
+    return {"startup_network": "online", "network_modified": False, "offline_verification_required": False}
+
+
+def launch_game(activity, output_directory, *, network_mode="offline"):
+    validate_startup_network(network_mode)
+    if network_mode == "offline":
+        before = offline_status()
+        if not before["verified"]:
+            raise CompatError("offline_not_verified_before_launch")
     # Activity identifiers were restricted to package-name characters. Quote the
     # complete component for the remote Android shell, including literal '$'.
     import shlex
@@ -471,10 +504,12 @@ def launch_offline(activity, output_directory):
         raise CompatError("activity_launch_failed", command_failure_detail("adb-am-start", code, output, errors))
     first_pid = process_id()
     time.sleep(30)
-    alive, focused = process_id() is not None, foreground()
-    after = offline_status()
+    alive, active_package = process_id() is not None, foreground_package()
+    focused = active_package == PACKAGE
+    after = offline_status() if network_mode == "offline" else None
     result = {"attempted": True, "process_alive_after_30s": alive, "app_foreground": focused,
-              "offline_after_launch": after, "screenshot_saved": False,
+              "startup_network": network_mode, "offline_after_launch": after, "screenshot_saved": False,
+              "foreground_package": active_package,
               "error_categories": {"process_exited": not alive, "native_crash_observed": False,
                                    "linker_error_observed": False, "java_crash_observed": False,
                                    "anr_observed": False}, "filtered_logcat_inspected": False}
@@ -487,28 +522,36 @@ def launch_offline(activity, output_directory):
                                  ("java_crash_observed", r"FATAL EXCEPTION"), ("anr_observed", r"ANR in")]:
                 result["error_categories"][key] = bool(re.search(pattern, logs))
             del logs  # No raw game/system logs in the report or artifact.
-    if after["verified"] and alive and focused:
+    if (network_mode == "online" or after["verified"]) and alive and focused:
         code, png, _ = command(["adb", "-s", SERIAL, "exec-out", "screencap", "-p"], binary=True)
         if code == 0 and png.startswith(b"\x89PNG\r\n\x1a\n") and len(png) <= 4 * 1024 * 1024 and foreground():
-            (output_directory / "offline-game.png").write_bytes(png)
+            (output_directory / "startup-game.png").write_bytes(png)
             result["screenshot_saved"] = True
     return result
 
 
+def launch_offline(activity, output_directory):
+    return launch_game(activity, output_directory, network_mode="offline")
+
+
 def initial_report():
     profile_name, profile = source_profile()
-    return {"schema_version": 1, "purpose": "signed_game_apk_offline_compatibility",
+    mode = startup_network()
+    return {"schema_version": 1, "purpose": "signed_game_apk_online_initial_startup" if mode == "online" else "signed_game_apk_offline_compatibility",
+            "startup_network": mode,
             "source_profile": profile_name, "expected_apk_bytes": profile["bytes"],
             "verification_only": os.environ.get("APK_VERIFY_ONLY") == "true",
             "expected_metadata_hash": profile["metadata_hash"].copy(), "actual_sha256": None,
             "expected_version_code": BUILD,
             "authenticity_gate": {"method": "apksigner_verified_publisher_certificate_sha256",
                                   "expected_certificate_sha256": PUBLISHER_SHA256, "verified": False},
-            "game_installed": False, "game_authenticated": False, "data_source_ready": False,
-            "account_login_attempted": False, "guest_authentication_requested": False,
+            "game_installed": False, "game_authenticated": None if mode == "online" else False,
+            "game_authentication_verified": False, "data_source_ready": False,
+            "account_login_attempted": False, "guest_authentication_requested": None if mode == "online" else False,
             "apk_persisted_as_artifact": False, "android_state_persisted": False,
             "launch_attempted": False, "failure_category": None, "failure_detail": None,
-            "notes": ["A running offline process does not establish full game functionality or sign-in support.",
+            "notes": ["A running process does not establish full game functionality or verified authentication.",
+                      "Online mode permits normal initial startup without account input or login interaction; automatic guest/network behavior is unverified.",
                       "Published SHA1 metadata is not a substitute for the mandatory publisher APK signature verification.",
                       "Only bounded observations are published; no APK, raw logs, XML or account data."]}
 
@@ -560,8 +603,9 @@ def execute(phase):
                 report["verified_apk"], activity = verify_apk(apk, signature_only=phase == "verify")
                 report["authenticity_gate"]["verified"] = True
                 if phase == "game":
-                    report["network_before_install"] = disable_android_network()
-                    if not report["network_before_install"]["verified"]:
+                    mode = startup_network()
+                    report["network_before_install"] = prepare_startup_network(mode)
+                    if mode == "offline" and not report["network_before_install"]["verified"]:
                         raise CompatError("offline_network_not_verified")
                     code, output, errors = adb("install", "--no-streaming", str(apk), timeout=180)
                     if code != 0 or "Success" not in output:
@@ -569,11 +613,13 @@ def execute(phase):
                     report["game_installed"] = True
                     if os.environ.get("ALLOW_OFFLINE_LAUNCH") == "true":
                         report["launch_attempted"] = True
-                        report["launch"] = launch_offline(activity, directory)
-                        if not report["launch"]["offline_after_launch"]["verified"]:
+                        report["launch"] = launch_game(activity, directory, network_mode=mode)
+                        if mode == "offline" and not report["launch"]["offline_after_launch"]["verified"]:
                             raise CompatError("offline_not_verified_after_launch")
                         if not report["launch"]["process_alive_after_30s"]:
                             raise CompatError("game_process_exited")
+                        if not report["launch"]["app_foreground"]:
+                            raise CompatError("game_not_foreground")
         elif phase == "after":
             report["host_after"] = host_report(root)
             outcome = os.environ.get("COMPAT_EMULATOR_OUTCOME", "unknown")

@@ -1,4 +1,4 @@
-name: Manual signed game APK offline compatibility
+name: Signed game startup compatibility
 
 on:
   workflow_dispatch:
@@ -16,10 +16,18 @@ on:
           - apkmirror-203982
           - apkpure-203982
       launch_offline:
-        description: Launch only after verified Android airplane mode and no default route
+        description: Launch the application once in the selected network mode
         required: true
         type: boolean
         default: true
+      startup_network:
+        description: Network mode for the bounded initial startup; no account input or login interaction
+        required: true
+        type: choice
+        default: offline
+        options:
+          - offline
+          - online
       verify_only:
         description: Download and diagnose the publisher APK signature on the host; skip Android
         required: true
@@ -41,6 +49,7 @@ jobs:
     env:
       APK_SOURCE_PROFILE: ${{ inputs.source_profile }}
       APK_VERIFY_ONLY: ${{ inputs.verify_only }}
+      GAME_STARTUP_NETWORK: ${{ inputs.startup_network }}
     steps:
       - name: Check out source without persisting credentials
         id: checkout
@@ -49,7 +58,7 @@ jobs:
           persist-credentials: false
       - name: Verify ephemeral runner and record capacity
         run: python3 tools/android-game-compat.py --phase before
-      - name: Check certificate formats and conservative offline-route classification
+      - name: Check certificate formats, network modes and route diagnostics
         run: python3 -m unittest discover -s tools/tests -p test_android_apk_diagnostics.py -v
       - name: Diagnose APK signature on the host without booting Android
         id: verifier
@@ -70,7 +79,7 @@ jobs:
             sudo chmod a+rw /dev/kvm
           fi
           [[ -r /dev/kvm && -w /dev/kvm ]]
-      - name: Verify signed APK and test its native launch offline
+      - name: Verify signed APK and observe initial startup in selected network mode
         id: emulator
         if: ${{ !inputs.verify_only }}
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
@@ -100,14 +109,14 @@ jobs:
           COMPAT_EMULATOR_OUTCOME: ${{ steps.emulator.outcome }}
           COMPAT_VERIFY_OUTCOME: ${{ steps.verifier.outcome }}
         run: python3 tools/android-game-compat.py --phase after
-      - name: Keep the bounded report and optional offline game screen for one day
+      - name: Keep the bounded report and optional application screen for one day
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-game-offline-compatibility
           path: |
             artifacts/android-game-compat/report.json
-            artifacts/android-game-compat/offline-game.png
+            artifacts/android-game-compat/startup-game.png
           retention-days: 1
           if-no-files-found: warn
           compression-level: 6

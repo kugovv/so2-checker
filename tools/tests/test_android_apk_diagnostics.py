@@ -1,6 +1,9 @@
 """Regressions from actual Android Build Tools verifier output; no network/APK."""
 from importlib.util import module_from_spec, spec_from_file_location
+import json
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -151,6 +154,93 @@ class OfflineRouteTests(unittest.TestCase):
         self.assertEqual(caught.exception.category, "activity_launch_failed")
         self.assertEqual(caught.exception.detail["exit_code"], 1)
         self.assertEqual(caught.exception.detail["stdout"], "Error type 3")
+
+
+class StartupNetworkTests(unittest.TestCase):
+    def observe_startup(self, mode, own_foreground=True):
+        with tempfile.TemporaryDirectory(prefix="startup-network-test-") as temporary:
+            directory = Path(temporary)
+            with patch.object(probe, "disable_android_network", return_value={"verified": True}) as disable, patch.object(
+                    probe, "offline_status", return_value={"verified": True}) as offline, patch.object(
+                    probe, "adb", return_value=(0, "Status: ok", "")), patch.object(
+                    probe, "process_id", return_value="123"), patch.object(
+                    probe, "foreground_package", return_value=probe.PACKAGE if own_foreground else "com.google.android.gms"), patch.object(
+                    probe.time, "sleep"), patch.object(
+                    probe, "command", return_value=(0, b"\x89PNG\r\n\x1a\nfixture", b"")) as capture:
+                prepared = probe.prepare_startup_network(mode)
+                observed = probe.launch_game("com.unity3d.player.UnityPlayerActivity", directory, network_mode=mode)
+                return (prepared, observed, disable.call_count, offline.call_count,
+                        capture.call_count, (directory / "startup-game.png").exists())
+
+    def test_online_startup_does_not_disable_or_enforce_offline_network(self):
+        prepared, observed, disable_calls, offline_calls, captures, screenshot = self.observe_startup("online")
+        self.assertFalse(prepared["network_modified"])
+        self.assertEqual(disable_calls, 0)
+        self.assertEqual(offline_calls, 0)
+        self.assertIsNone(observed["offline_after_launch"])
+        self.assertTrue(observed["process_alive_after_30s"] and observed["app_foreground"])
+        self.assertEqual(captures, 1)
+        self.assertTrue(screenshot)
+
+    def test_offline_startup_still_disables_and_verifies_network(self):
+        prepared, observed, disable_calls, offline_calls, _, _ = self.observe_startup("offline")
+        self.assertTrue(prepared["verified"])
+        self.assertEqual(disable_calls, 1)
+        self.assertEqual(offline_calls, 2)
+        self.assertTrue(observed["offline_after_launch"]["verified"])
+
+    def test_online_screenshot_is_not_captured_outside_own_foreground(self):
+        _, observed, _, _, captures, screenshot = self.observe_startup("online", own_foreground=False)
+        self.assertFalse(observed["screenshot_saved"])
+        self.assertEqual(captures, 0)
+        self.assertFalse(screenshot)
+
+    def test_unknown_network_mode_is_rejected_before_any_device_operation(self):
+        with patch.object(probe, "adb", side_effect=AssertionError("must not touch Android")):
+            for call in (lambda: probe.prepare_startup_network("unknown"),
+                         lambda: probe.launch_game("Activity", Path("unused"), network_mode="unknown")):
+                with self.assertRaises(probe.CompatError) as caught:
+                    call()
+                self.assertEqual(caught.exception.category, "unknown_startup_network")
+
+    def test_online_report_keeps_authentication_unknown_and_account_input_absent(self):
+        with patch.dict(os.environ, {"GAME_STARTUP_NETWORK": "online"}):
+            report = probe.initial_report()
+        self.assertEqual(report["startup_network"], "online")
+        self.assertIsNone(report["game_authenticated"])
+        self.assertIsNone(report["guest_authentication_requested"])
+        self.assertFalse(report["game_authentication_verified"])
+        self.assertFalse(report["account_login_attempted"])
+        self.assertFalse(report["data_source_ready"])
+
+    def test_foreground_diagnostic_retains_only_the_validated_component_package(self):
+        output = ("topResumedActivity=ActivityRecord{abc u0 com.google.android.gms/.auth.SignInActivity t3}\n"
+                  "Intent extras and URI values must never be returned\n")
+        with patch.object(probe, "adb", return_value=(0, output, "")):
+            self.assertEqual(probe.foreground_package(), "com.google.android.gms")
+            self.assertFalse(probe.foreground())
+        with patch.object(probe, "adb", return_value=(0, "topResumedActivity=unknown format\ncom.example.unrelated/Activity", "")):
+            self.assertIsNone(probe.foreground_package())
+
+    def test_online_execute_requires_own_foreground_after_successful_install(self):
+        with tempfile.TemporaryDirectory(prefix="startup-execute-test-") as temporary:
+            root = Path(temporary).resolve()
+            with patch.dict(os.environ, {"GAME_STARTUP_NETWORK": "online", "ALLOW_OFFLINE_LAUNCH": "true"}), patch.object(
+                    probe, "guard", return_value=root), patch.object(probe, "host_report", return_value={}), patch.object(
+                    probe, "emulator_package_version", return_value="test"), patch.object(
+                    probe, "download_apk", return_value={"actual_sha256": "unit-test-fixture"}), patch.object(
+                    probe, "verify_apk", return_value=({"package": probe.PACKAGE}, "Activity")), patch.object(
+                    probe, "adb", side_effect=[(0, "1\n", ""), (0, "Success\n", "")]), patch.object(
+                    probe, "disable_android_network", side_effect=AssertionError("online must not disable network")), patch.object(
+                    probe, "offline_status", side_effect=AssertionError("online must not enforce offline")), patch.object(
+                    probe, "launch_game", return_value={"process_alive_after_30s": True, "app_foreground": False, "offline_after_launch": None}):
+                with patch("builtins.print"):
+                    self.assertEqual(probe.execute("game"), 1)
+            report = json.loads((root / "artifacts/android-game-compat/report.json").read_text())
+            self.assertEqual(report["failure_category"], "game_not_foreground")
+            self.assertTrue(report["game_installed"])
+            self.assertIsNone(report["game_authenticated"])
+            self.assertFalse(report["game_authentication_verified"])
 
 
 if __name__ == "__main__":
