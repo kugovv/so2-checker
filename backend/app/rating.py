@@ -2,7 +2,7 @@
 from decimal import Decimal, ROUND_HALF_UP, localcontext
 from statistics import median, pstdev
 
-VERSION = "so2-v1-preliminary"
+VERSION = "so2-comp-v2-preliminary"
 ALLIES_VERSION = "so2-allies-v2-preliminary"
 # Conservative low-evidence prior, not real kills/deaths. One combined
 # duel ratio prevents adding a second bonus for the same kills through KPR.
@@ -42,6 +42,33 @@ def rating_color(value):
     if value <= Decimal("1.80"):
         return "green"
     return "gold"
+
+
+def match_round_count(score):
+    if (not isinstance(score, (list, tuple)) or len(score) != 2
+            or any(type(value) is not int or value < 0 for value in score)):
+        return None
+    total = sum(score)
+    return total if 0 < total <= 200 else None
+
+
+def calculate_match(mode, kills, deaths, assists, rounds=None, score=None):
+    """Use actual personal rounds first, otherwise label the match-total assumption.
+
+    Never write inferred match rounds into a participant's actual rounds field.
+    A scoreboard cannot establish late joining/leaving or personal participation.
+    """
+    actual = type(rounds) is int and rounds > 0
+    inferred = match_round_count(score) if mode == 'competitive' and not actual else None
+    if inferred is not None and ((deaths is not None and deaths > inferred)
+                                 or (kills is not None and kills > inferred * 5)):
+        inferred = None
+    result = calculate(mode, kills, deaths, assists, rounds=rounds if actual else inferred)
+    if result['value'] is not None and mode == 'competitive':
+        result['parameters']['rounds_basis'] = 'personal' if actual else 'match_total_assumed_full' if inferred else 'unknown'
+        if inferred:
+            result['tier'] = 'match_rounds'
+    return result
 
 
 def calculate(mode, kills, deaths, assists, rounds=None):

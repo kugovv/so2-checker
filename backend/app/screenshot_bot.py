@@ -12,7 +12,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from .rating import ALLIES_PARAMETERS, PARAMETERS, WEIGHTS, calculate, displayed, rating_color
+from .rating import ALLIES_PARAMETERS, PARAMETERS, WEIGHTS, calculate_match as calculate, displayed, rating_color
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MODES = {"competitive": "Соревновательный 5×5", "allies": "Напарники 2×2"}
@@ -142,16 +142,17 @@ def formula_text(mode):
                 "Степень 0.60 ограничивает рост крайних результатов, верхнего потолка нет. "
                 "Коэффициенты предварительные. Раунды, звание, MVP и MMR не участвуют. "
                 "Это оценка дуэльной эффективности по K/D/A: темп игры и пассивность по ней определить нельзя.")
-    norms = PARAMETERS[mode]["match"]
-    return (f"Предварительная методика v1 · {MODES[mode]}\n\n"
-            f"R = max(0; 1 + {WEIGHTS['kills']} × (У/{norms['kills']} − 1)"
-            f" − {WEIGHTS['deaths']} × (С/{norms['deaths']} − 1)"
-            f" + {WEIGHTS['assists']} × (А/{norms['assists']} − 1)).\n"
-            "У — убийства, С — смерти, А — ассисты.\n\n"
+    norms = PARAMETERS[mode]["rounds"]
+    return (f"Предварительная методика v2 · {MODES[mode]}\n\n"
+            f"R = max(0; 1 + {WEIGHTS['kills']} × (У/Р/{norms['kills']} − 1)"
+            f" − {WEIGHTS['deaths']} × (С/Р/{norms['deaths']} − 1)"
+            f" + {WEIGHTS['assists']} × (А/Р/{norms['assists']} − 1)).\n"
+            "У — убийства, С — смерти, А — ассисты, Р — раунды.\n\n"
             "Ассисты имеют отдельный положительный вес после нормирования. "
             "Нормы предварительные, без калибровки на большой выборке. "
-            "Личные раунды и MMR на скриншоте не подтверждены, поэтому "
-            "оценка упрощённая. Это собственный рейтинг приложения.")
+            "Раунды автоматически берутся из итогового счёта. Расчёт предполагает полное участие; "
+            "поздний вход или ранний выход по снимку определить нельзя. Если счёт не прочитан или противоречит K/D/A, "
+            "используется явно упрощённый расчёт на матч с нормами 15/15/4. MMR не участвует.")
 
 
 class ScreenshotController:
@@ -356,14 +357,6 @@ class ScreenshotController:
         mode = data.get("mode")
         buttons = [[InlineKeyboardButton(text=("✓ " if mode == key else "") + label,
                      callback_data=f"shot:{data['nonce']}:mode:{key}")] for key, label in MODES.items()]
-        if mode == "competitive":
-            score = data.get('score')
-            total = sum(score) if score and len(score) == 2 else 0
-            if 0 < total <= 200:
-                buttons.append([InlineKeyboardButton(text=f"Сыграл все {total} раундов",
-                                callback_data=f"shot:{data['nonce']}:rounds:all")])
-            buttons.append([InlineKeyboardButton(text="Личные раунды неизвестны",
-                            callback_data=f"shot:{data['nonce']}:rounds:unknown")])
         if mode in MODES and all(type(row.get(key)) is int for key in ("kills", "deaths", "assists")):
             buttons.append([InlineKeyboardButton(text="Верно, рассчитать",
                             callback_data=f"shot:{data['nonce']}:confirm")])
@@ -379,12 +372,14 @@ class ScreenshotController:
         if data.get("score"):
             context.append("счёт " + ":".join(str(value) for value in data["score"]))
         context_text = "\n" + " · ".join(context) if context else ""
+        calculation = calculate(mode, row.get('kills'), row.get('deaths'), row.get('assists'), score=data.get('score')) if mode in MODES else None
+        auto_rounds = calculation['inputs']['rounds'] if calculation else None
         await self.answer(message, f"Проверьте данные\n{identity}\n"
                           f"K/D/A: {statistics_text(row)}\n"
                           f"Порядок: убийства / смерти / ассисты.\nРежим: {mode_text}{context_text}\n\n"
-                          + (f"Личных раундов: {data['personal_rounds']}. Вы подтвердили полное участие."
-                             if mode == "competitive" and data.get('personal_rounds') else
-                             "Личные раунды неизвестны: будет упрощённая оценка. Подтвердите полное участие кнопкой, только если играли весь матч."
+                          + (f"Для расчёта автоматически учтено {auto_rounds} раундов матча. Полное участие предполагается: поздний вход или ранний выход на снимке не видны."
+                             if mode == "competitive" and auto_rounds else
+                             "Счёт не прочитан или противоречит K/D/A: будет явно упрощённая оценка без раундов."
                              if mode == "competitive" else "Отдельная методика Напарников v2: основной фактор — соотношение K/D, ассисты повышают оценку."),
                           reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -430,7 +425,6 @@ class ScreenshotController:
         valid = ((action == "row" and len(parts) == 4 and data["phase"] == "choose"
                   and re.fullmatch(r"[0-9]{1,2}", parts[3]) is not None)
                  or (action == "mode" and len(parts) == 4 and data["phase"] == "confirm" and parts[3] in MODES)
-                 or (action == "rounds" and len(parts) == 4 and data["phase"] == "confirm" and parts[3] in {"all", "unknown"} and data.get('mode') == 'competitive')
                  or (action == "manual" and len(parts) == 3 and data["phase"] in {"choose", "confirm"})
                  or (action == "confirm" and len(parts) == 3 and data["phase"] == "confirm"))
         if not valid:
@@ -451,17 +445,6 @@ class ScreenshotController:
             data["mode"] = parts[3]
             data.pop('personal_rounds', None)
             await self._confirmation(message, state, data)
-        elif action == "rounds":
-            score = data.get('score')
-            total = sum(score) if score and len(score) == 2 else 0
-            if parts[3] == 'all' and 0 < total <= 200:
-                if data['selected'].get('deaths') is not None and data['selected']['deaths'] > total:
-                    await self.answer(message, "Смертей больше числа раундов. Исправьте K/D/A или счёт не распознан верно; полное участие не подтверждено.")
-                    return
-                data['personal_rounds'] = total
-            else:
-                data.pop('personal_rounds', None)
-            await self._confirmation(message, state, data)
         elif action == "manual":
             await self._manual(message, state, data)
         else:
@@ -469,9 +452,10 @@ class ScreenshotController:
             if mode not in MODES or any(type(row.get(key)) is not int for key in ("kills", "deaths", "assists")):
                 await self._confirmation(message, state, data)
                 return
-            # A scoreboard's final score is never substituted for personal rounds.
-            personal_rounds = data.get('personal_rounds') if mode == 'competitive' else None
-            result = calculate(mode, row["kills"], row["deaths"], row["assists"], rounds=personal_rounds)
+            # Match rounds are an explicit full-participation assumption,
+            # never recorded as verified personal participation.
+            result = calculate(mode, row["kills"], row["deaths"], row["assists"], score=data.get('score'))
+            auto_rounds = result['inputs']['rounds']
             icon = COLOR_ICONS[rating_color(result["value"])]
             requested = data.get("requested_nickname") or row["nickname"]
             identity = f"Игрок: {requested}"
@@ -481,8 +465,8 @@ class ScreenshotController:
                     f"{identity}\n{MODES[mode]} · K/D/A {statistics_text(row)}\n\n"
                     "Источник: подтверждённые данные скриншота.\n"
                     + ("Предварительная дуэльная оценка 2×2 · v2 по K/D/A, без MMR."
-                       if mode == "allies" else f"Оценка по личным раундам: {personal_rounds}. Полное участие подтверждено вами. Без MMR."
-                       if personal_rounds else "Предварительная оценка v1 по K/D/A, без личных раундов и MMR."))
+                       if mode == "allies" else f"Автоматический расчёт по {auto_rounds} раундам матча. Полное участие предполагается; поздний вход/ранний выход по снимку не определить. Без MMR."
+                       if auto_rounds else "Упрощённая оценка по K/D/A: счёт не прочитан или противоречит показателям, число раундов неизвестно. Без MMR."))
             selected_index = data.get("selected_index")
             if type(selected_index) is not int or not 0 <= selected_index < len(data.get("rows", [])):
                 await self._manual(message, state, data)
@@ -494,7 +478,7 @@ class ScreenshotController:
                 "requested_nickname": requested, "match_id": data.get("match_id"),
                 "map_name": data.get("map_name"), "score": data.get("score"),
                 "played_at": None, "date_label": None, "image_fingerprint": data.get("image_fingerprint"),
-                "personal_rounds": personal_rounds,
+                "personal_rounds": None,
             }
             sender = getattr(query, "from_user", None)
             try:

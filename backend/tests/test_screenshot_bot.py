@@ -94,7 +94,7 @@ def buttons(message):
     return [button for row in message.answers[-1][1]["reply_markup"].inline_keyboard for button in row]
 
 
-def test_caption_requires_confirmation_and_uses_kills_deaths_assists_without_global_rounds():
+def test_caption_requires_kda_confirmation_and_automatically_uses_match_rounds():
     async def scenario():
         async with harness() as (controller, state, bot, _):
             message = FakeMessage(caption="Ник: hamy")
@@ -104,9 +104,10 @@ def test_caption_requires_confirmation_and_uses_kills_deaths_assists_without_glo
             assert "K/D/A: 22/7/0" in message.answers[-1][0]
             assert not any("Рейтинг за матч:" in text for text, _ in message.answers)
             await click(controller, state, message, "confirm")
-            assert "🟢 Рейтинг за матч: 1.34" in message.answers[-1][0]
+            assert "🟢 Рейтинг за матч: 1.78" in message.answers[-1][0]
             assert "22/7/0" in message.answers[-1][0]
-            assert "без личных раундов и MMR" in message.answers[-1][0]
+            assert "14 раундам матча" in message.answers[-1][0]
+            assert "Полное участие предполагается" in message.answers[-1][0]
             assert await state.get_data() == {} and await state.get_state() is None
     asyncio.run(scenario())
 
@@ -175,7 +176,7 @@ def test_cyrillic_alias_and_english_fuzzy_name_keep_the_original_ocr_row_visible
             assert "На скриншоте распознано: harny" in message.answers[-1][0]
             assert not any("Рейтинг за матч:" in text for text, _ in message.answers)
             await click(controller, state, message, "confirm")
-            assert "Рейтинг за матч: 1.34" in message.answers[-1][0]
+            assert "Рейтинг за матч: 1.78" in message.answers[-1][0]
     asyncio.run(scenario())
 
 
@@ -432,7 +433,7 @@ def test_real_dispatcher_keys_callback_state_by_sender_not_callback_payload():
         dispatcher.include_router(create_screenshot_router(saver=saver))
         victim = FSMContext(storage=storage, key=StorageKey(bot_id=bot.id, chat_id=91, user_id=91))
         payload = {"phase": "confirm", "expires": asyncio.get_running_loop().time() + 600,
-                   "nonce": "0123456789abcdef", "mode": "competitive",
+                   "nonce": "0123456789abcdef", "mode": "competitive", "score": [8,6],
                    "selected": {"nickname": "hamy", "kills": 22, "deaths": 7, "assists": 0},
                    "rows": [{"nickname": "hamy", "kills": 22, "deaths": 7, "assists": 0}],
                    "selected_index": 0}
@@ -444,7 +445,7 @@ def test_real_dispatcher_keys_callback_state_by_sender_not_callback_payload():
                                      message=message, chat_instance="test", data="shot:0123456789abcdef:confirm")
             await dispatcher.feed_update(bot, Update(update_id=update_id, callback_query=callback))
         assert len(session.sent) == 1 and int(session.sent[0].chat_id) == 91
-        assert "Рейтинг за матч: 1.34" in session.sent[0].text
+        assert "Рейтинг за матч: 1.78" in session.sent[0].text
         assert await victim.get_data() == {}
         await bot.session.close()
         await storage.close()
@@ -500,7 +501,7 @@ def test_saving_error_keeps_rating_and_offers_retry_without_claiming_saved_or_be
             await controller.upload(message, state, bot)
             await click(controller, state, message, "confirm")
             text = message.answers[-1][0]
-            assert "Рейтинг за матч: 1.34" in text and "не сохранён" in text
+            assert "Рейтинг за матч: 1.78" in text and "не сохранён" in text
             assert "Матч сохранён." not in text and "Новый личный рекорд" not in text
             assert "secret" not in text
             assert any(button.text == "Повторить сохранение" for button in buttons(message))
@@ -534,7 +535,7 @@ def test_default_bot_saver_commits_private_archive_without_canonical_history_or_
             shots = list(db.scalars(select(m.ScreenshotMatch)))
             assert len(shots) == 1 and shots[0].telegram_id == 91
             snapshot = shots[0].snapshot
-            assert snapshot["rating_display"] == "1.34" and snapshot["map"] == "Sandstone"
+            assert snapshot["rating_display"] == "1.78" and snapshot["map"] == "Sandstone"
             assert len(snapshot["players"]) == 2
             assert snapshot["players"][0]["user_confirmed"] is True
             assert snapshot["players"][1]["user_confirmed"] is False

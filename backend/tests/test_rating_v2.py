@@ -48,7 +48,7 @@ def test_confirmed_rounds_persist_only_for_own_row_and_deduplicate(db):
     assert saved['best']['personal_rounds']==14
     assert saved['match']['players'][1]['rating']==old['match']['players'][1]['rating']
     # A larger fallback value cannot silently replace a rounds-based record.
-    other=personal.save_screenshot_match(db,100,board('unknown',kills=40,deaths=1,assists=10))
+    other=personal.save_screenshot_match(db,100,board('unknown',kills=40,deaths=1,assists=10) | {'score':None})
     assert other['best']['id']==saved['best']['id']
     assert personal.get_screenshot_match(db,db.get(m.User,100),saved['match']['screenshot_id'])['rating_display']=='1.78'
 
@@ -75,7 +75,7 @@ def test_old_archive_recalculated_and_best_uses_current_duel_sql(db_factory,monk
         assert all(row.formula_version==ALLIES_VERSION for row in shots)
         best=personal.get_personal_best(db,db.get(m.User,100),'allies')
         assert best['match_id']=='high-duel' and best['rating_display']=='1.85'
-        assert personal.get_personal_best(db,db.get(m.User,100),'competitive')['rating_display']=='1.34'
+        assert personal.get_personal_best(db,db.get(m.User,100),'competitive')['rating_display']=='1.78'
 
 
 def test_remembered_nickname_private_durable_and_only_after_confirmation(db_factory):
@@ -91,7 +91,7 @@ def test_remembered_nickname_private_durable_and_only_after_confirmation(db_fact
     with db_factory() as db: assert personal.get_screenshot_nickname(db,100)=='harny'
 
 
-def test_bot_confirm_rounds_then_save_and_reset_on_manual_correction():
+def test_bot_automatically_uses_score_without_participation_question():
     async def scenario():
         saved=[]
         async def saver(uid,payload):
@@ -99,13 +99,15 @@ def test_bot_confirm_rounds_then_save_and_reset_on_manual_correction():
         async with harness(saver=saver) as (c,state,bot,_):
             message=FakeMessage(caption='hamy')
             await c.upload(message,state,bot)
-            await click(c,state,message,'rounds:all')
-            assert (await state.get_data())['personal_rounds']==14
+            assert (await state.get_data()).get('personal_rounds') is None
+            assert '14 раундов матча' in message.answers[-1][0]
+            markup=message.answers[-1][1]['reply_markup']
+            assert not any(':rounds:' in (b.callback_data or '') for row in markup.inline_keyboard for b in row)
             await click(c,state,message,'confirm')
             assert 'Рейтинг за матч: 1.78' in message.answers[-1][0]
-            assert saved[0]['personal_rounds']==14
+            assert saved[0]['personal_rounds'] is None
+            assert saved[0]['score']==[8,6]
             await c.upload(message,state,bot)
-            await click(c,state,message,'rounds:all')
             await click(c,state,message,'manual')
             assert (await state.get_data()).get('personal_rounds') is None
     asyncio.run(scenario())

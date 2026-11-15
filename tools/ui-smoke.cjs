@@ -277,6 +277,18 @@ async function runWidth(browser, width) {
       await expect(rating).toHaveClass(new RegExp(`\\b${boundaries[i][1]}\\b`));
     }
     results.push({ width, check: 'rounded_rating_color_boundaries', passed: true });
+    const redStyle = await page.locator('.match-card').nth(0).locator('.rating').evaluate(e => getComputedStyle(e).color);
+    const greenStyle = await page.locator('.match-card').nth(3).locator('.rating').evaluate(e => getComputedStyle(e).color);
+    assert.equal(redStyle, 'rgb(255, 82, 97)');
+    assert.equal(greenStyle, 'rgb(37, 229, 130)');
+    const gold = page.locator('.match-card').nth(5).locator('.rating');
+    const reducedGold = await gold.evaluate(e => ({ background: getComputedStyle(e).backgroundImage, animation: getComputedStyle(e).animationName }));
+    assert.ok(reducedGold.background.includes('linear-gradient'));
+    assert.equal(reducedGold.animation, 'none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    assert.equal(await gold.evaluate(e => getComputedStyle(e).animationName), 'rating-gold-sheen');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    results.push({ width, check: 'saturated_rating_colors_gold_sheen_and_reduced_motion', passed: true });
     await noHorizontal(page, 'matches', width);
     await page.locator('.match-card').first().click();
     await expect(page.getByRole('heading', { name: 'Участники матча' })).toBeVisible();

@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app import models as m
 from app.db import Base
 from app import personal_matches as personal
-from app.rating import calculate
+from app.rating import calculate, calculate_match
 from app.service import ingest_page, serialize_profile, upsert_profile
 from app.source import HistoryPage
 from tests.helpers import login, match, profile
@@ -44,8 +44,10 @@ def test_screenshot_persists_complete_private_board_without_polluting_game_histo
         own = db.get(m.User, 100)
         best = personal.get_personal_best(db, own, "competitive")
         assert best["screenshot_id"] == screenshot_id
-        assert best["source"] == "screenshot" and best["rating_tier"] == "match"
-        assert best["rating_inputs"] == {"kills": 22, "deaths": 7, "assists": 0, "rounds": None}
+        assert best["source"] == "screenshot" and best["rating_tier"] == "match_rounds"
+        assert best["rating_inputs"] == {"kills": 22, "deaths": 7, "assists": 0, "rounds": 14}
+        assert best['personal_rounds'] is None and best['match_rounds'] == 14
+        assert best['rounds_basis'] == 'match_total_assumed_full'
         assert best["rating_parameters"]["opponent_adjustment"] is False
         assert best["ended_at"] is None and best["date_label"] == "Вчера в 13:41"
         assert best["loaded_at"] is not None
@@ -76,8 +78,8 @@ def test_strict_bigger_replaces_tie_and_lower_keep_existing_match_and_modes_sepa
 
 
 def test_actual_decimal8_improvement_can_replace_equal_two_digit_display(db):
-    first = personal.save_screenshot_match(db, 100, board("first", kills=16, deaths=10, assists=3))
-    second = personal.save_screenshot_match(db, 100, board("second", kills=17, deaths=11, assists=2))
+    first = personal.save_screenshot_match(db, 100, board("first", kills=16, deaths=10, assists=3) | {'score': None})
+    second = personal.save_screenshot_match(db, 100, board("second", kills=17, deaths=11, assists=2) | {'score': None})
     assert first["match"]["rating_display"] == second["match"]["rating_display"] == "1.10"
     assert first["match"]["rating_color"] == second["match"]["rating_color"] == "white"
     assert second["is_new_best"] and second["best"]["match_id"] == "second"
@@ -255,7 +257,7 @@ def test_sql_candidate_score_matches_decimal_formula_including_clamp_and_close_v
                                                 kills=kills, deaths=deaths, assists=assists))
         computed = db.scalar(select(personal._rating_sql(m.ScreenshotMatch, mode)).where(
             m.ScreenshotMatch.id == saved["match"]["screenshot_id"]))
-        expected = calculate(mode, kills, deaths, assists, rounds=None)["value"]
+        expected = calculate_match(mode, kills, deaths, assists, rounds=None, score=[8,6])["value"]
         assert Decimal(str(computed)).quantize(Decimal("0.00000001")) == expected
 
 

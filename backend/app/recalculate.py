@@ -2,8 +2,8 @@
 from sqlalchemy import select
 
 from .db import SessionLocal
-from .models import Participant, ScreenshotMatch, User, PersonalBest, utcnow
-from .rating import VERSION, calculate, formula_version
+from .models import Participant, ScreenshotMatch, User, Match, utcnow
+from .rating import VERSION, calculate_match as calculate, formula_version
 from .personal_matches import _screenshot_snapshot, get_personal_best
 
 
@@ -14,7 +14,8 @@ def run(mode=None):
         if mode:
             query = query.where(Participant.mode == mode)
         for row in db.scalars(query.execution_options(yield_per=1000)):
-            rating = calculate(row.mode, row.kills, row.deaths, row.assists, row.rounds)
+            match = db.get(Match, row.match_id)
+            rating = calculate(row.mode, row.kills, row.deaths, row.assists, row.rounds, score=match.score)
             row.rating = rating["value"]
             row.rating_tier = rating["tier"]
             row.formula_version = formula_version(row.mode)
@@ -28,7 +29,8 @@ def run(mode=None):
         shot_count = 0
         for shot in db.scalars(shots.execution_options(yield_per=500)):
             shot.snapshot = _screenshot_snapshot(shot)
-            shot.rating = calculate(shot.mode, shot.kills, shot.deaths, shot.assists)['value']
+            shot.rating = calculate(shot.mode, shot.kills, shot.deaths, shot.assists,
+                                    rounds=shot.snapshot.get('personal_rounds'), score=shot.snapshot.get('score'))['value']
             shot.formula_version = formula_version(shot.mode)
             shot.updated_at = utcnow()
             shot_count += 1

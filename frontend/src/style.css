@@ -74,4 +74,14 @@
 .saved-player-row>.saved-rating{font-size:14px;text-align:right}
 .saved-missing{display:block;font-size:14px;line-height:1.2;color:#8d9aa5;white-space:nowrap}
 .saved-detail-note{margin-top:14px}
+:root{--rating-red:#ff5261;--rating-green:#25e582;--rating-gold:#edbd50}
+.red,.rating.red{color:var(--rating-red)}
+.green,.rating.green{color:var(--rating-green)}
+.gold,.rating.gold{color:var(--rating-gold)}
+@supports ((background-clip:text) or (-webkit-background-clip:text)){
+  .rating.gold{background-image:linear-gradient(110deg,#ca942b 0%,#edbd50 18%,#fff1b8 31%,#dca73d 44%,#f9d878 61%,#fff4cc 70%,#d29b2d 84%,#edbd50 100%);background-size:260% 100%;background-position:100% 50%;background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 5px #e3ad361f);animation:rating-gold-sheen 5.5s ease-in-out infinite}
+}
+@keyframes rating-gold-sheen{0%,15%{background-position:100% 50%}65%,100%{background-position:0% 50%}}
+@media(prefers-reduced-motion:reduce){.rating.gold{animation:none;background-position:35% 50%}}
+@media(forced-colors:active){.rating.gold{background:none;-webkit-text-fill-color:currentColor;filter:none;animation:none;color:CanvasText}}
 @media(max-width:374px){.best-match-card{padding:14px 12px}.best-rating .saved-rating{font-size:30px}.saved-scoreboard-head,.saved-player-row{grid-template-columns:minmax(0,1fr) repeat(3,35px) 44px;gap:4px}.saved-team{padding:12px 9px}.saved-detail-hero{padding:16px 13px}}

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from . import models as m
 from .config import get_settings
-from .rating import VERSION, formula_version, calculate, displayed, rating_color, summarize
+from .rating import VERSION, formula_version, calculate_match as calculate, displayed, rating_color, summarize
 from .source import HistoryPage, SourceMatch, SourceProfile, SourceUnavailable
 
 MODES = {"competitive", "allies"}
@@ -58,6 +58,9 @@ def ingest_page(db: Session, uid: str, mode: str, page: HistoryPage, first_page:
             continue
         if not match.id or match.ended_at is None:
             continue
+        if match.score is not None and (not isinstance(match.score, (list, tuple)) or len(match.score) != 2
+                or any(type(value) is not int or not 0 <= value <= 999 for value in match.score)):
+            raise SourceUnavailable("Источник вернул некорректный итоговый счёт")
         existing = db.get(m.Match, match.id)
         if existing and existing.mode != mode:
             raise SourceUnavailable("Источник вернул конфликт режимов матча")
@@ -72,7 +75,7 @@ def ingest_page(db: Session, uid: str, mode: str, page: HistoryPage, first_page:
                 raise SourceUnavailable("Источник вернул некорректные показатели матча")
             if person.headshots is not None and person.kills is not None and person.headshots > person.kills:
                 raise SourceUnavailable("Источник вернул некорректные убийства в голову")
-            rating = calculate(mode, person.kills, person.deaths, person.assists, person.rounds)
+            rating = calculate(mode, person.kills, person.deaths, person.assists, person.rounds, score=match.score)
             participant = db.scalar(select(m.Participant).where(m.Participant.match_id == match.id, m.Participant.player_uid == person.profile.uid))
             if participant is None:
                 participant = m.Participant(match_id=match.id, player_uid=person.profile.uid, mode=mode, ended_at=match.ended_at, formula_version=formula_version(mode))
