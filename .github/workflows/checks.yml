@@ -11,8 +11,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/game_client/requirements.txt
       - run: pip install -r requirements.txt
+        working-directory: backend
+      - run: pip install -r game_client/requirements.txt
         working-directory: backend
       - run: python -m pytest -q
         working-directory: backend

@@ -1,0 +1,4 @@
+# Standalone protocol probe; separate from the production source adapter.
+protobuf==5.29.3
+cryptography==44.0.0
+lz4==4.4.4

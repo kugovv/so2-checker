@@ -5,6 +5,8 @@
 .npm-cache/
 .pw-browsers/
 .python/
+.android-sdk/
+.android/
 .venv/
 .coverage
 node_modules/

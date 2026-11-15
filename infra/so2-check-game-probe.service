@@ -1,0 +1,23 @@
+[Unit]
+Description=Standoff 2 read-only TLS and RPC connectivity check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=so2check
+Group=so2check
+WorkingDirectory=/opt/so2-check/game-client
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/so2-check/bin/game-client --preflight
+TimeoutStartSec=35
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/so2-check
+MemoryHigh=70M
+MemoryMax=100M
+CPUQuota=25%
+LogNamespace=so2-check
