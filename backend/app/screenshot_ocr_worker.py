@@ -14,7 +14,7 @@ import tempfile
 import unicodedata
 import warnings
 
-from PIL import Image, ImageChops, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageFilter, ImageOps, UnidentifiedImageError
 
 from .screenshot_ocr import PlayerRow, Scoreboard
 
@@ -181,7 +181,15 @@ def read_scoreboard(image, engine):
         top = round(layout["header_y"] + .033 * height)
         bottom = round(height * .91)
         area = image.crop((round(centers[0] - .48 * step), top, round(centers[-1] + .48 * step), bottom))
-        bands = row_bands(color_mask(area, team), height)
+        # A blue-tinted scoreboard/background can otherwise merge the first
+        # CT row with a large solid region. Locate glyph edges above the local
+        # background; retain the original pixels for recognition.
+        mask = color_mask(area, team)
+        bands = row_bands(mask, height)
+        if len(bands) not in (2, 5):
+            light = area.convert("L")
+            detail = ImageChops.subtract(light, light.filter(ImageFilter.GaussianBlur(8))).point(lambda n: 255 if n > 12 else 0)
+            bands = row_bands(ImageChops.multiply(mask, detail), height)
         if len(bands) not in (2, 5):
             raise RecognitionError("Строки игроков читаются не полностью. Пришлите чёткий полный скриншот таблицы.")
         for position, (low, high) in enumerate(bands, 1):
@@ -219,7 +227,7 @@ def read_scoreboard(image, engine):
     if "дуэл" in normalized or "duel" in normalized:
         raise RecognitionError("Дуэли не поддерживаются. Нужен матч 5×5 или Напарники 2×2.")
     mode = ("competitive" if "соревнов" in normalized or "competitive" in normalized
-            else "allies" if any(value in normalized for value in ("напарник", "allies", "wingman")) else None)
+            else "allies" if any(value in normalized for value in ("напарник", "союзник", "allies", "wingman")) else None)
     if mode is None:
         problems.append("Режим не прочитан — выберите его перед расчётом.")
     left_footer = sorted([word for word in footer_words if word["left"] < .68 * width], key=lambda word: word["left"])
@@ -235,6 +243,14 @@ def read_scoreboard(image, engine):
     score_words.sort(key=lambda item: item["left"])
     score = (tuple(int(word["text"]) for word in score_words)
              if len(score_words) == 2 and abs(score_words[0]["top"] - score_words[1]["top"]) < .03 * height else None)
+    if score is None:
+        # Coloured score digits sometimes merge into one TSV word (e.g. 3:8).
+        # Read each side separately; missing digits remain missing.
+        y1, y2 = round(layouts[0]["header_y"] - .13 * height), round(layouts[0]["header_y"] - .035 * height)
+        values = [engine.number(image.crop((round(left * width), y1, round(right * width), y2)), team, maximum=99)
+                  for left, right, team in ((.47, .515, "ct"), (.515, .565, "t"))]
+        if all(value is not None for value in values):
+            score = tuple(values)
     return Scoreboard(rows=rows, mode=mode, match_id=match.group(1) if match else None,
                       score=score, warnings=list(dict.fromkeys(problems)), map_name=map_name)
 

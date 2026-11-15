@@ -82,6 +82,17 @@ def test_real_private_example_with_local_tesseract():
     assert displayed(calculate(board.mode, 22, 7, 0, rounds=None)["value"]) == "1.34"
 
 
+def test_real_private_allies_example_with_tinted_background():
+    sample = os.environ.get("SO2_ALLIES_EXAMPLE")
+    if not sample or not shutil.which(os.environ.get("TESSERACT_CMD", "tesseract")):
+        pytest.skip("Private allies example and local Tesseract required")
+    board = analyze_bytes(Path(sample).read_bytes())
+    assert board.mode == "allies" and board.match_id == "2187421850"
+    assert board.map_name == "Sandstone" and board.score == (3, 8)
+    assert [(r.kills, r.deaths, r.assists) for r in board.rows] == [(7, 8, 0), (1, 10, 2), (13, 3, 0), (4, 5, 2)]
+    assert board.rows[2].nickname == "harny"
+
+
 @pytest.mark.parametrize("mode,count,map_name", [("competitive", 5, "Sandstone"), ("allies", 2, "Rust")])
 def test_ocr_on_generated_scoreboard_pixels(mode, count, map_name):
     if not os.environ.get("RUN_OCR_INTEGRATION") or not shutil.which("tesseract"):
