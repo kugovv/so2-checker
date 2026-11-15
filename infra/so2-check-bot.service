@@ -19,9 +19,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/so2-check
-MemoryHigh=100M
-MemoryMax=150M
-CPUQuota=30%
+MemoryHigh=192M
+MemoryMax=256M
+CPUQuota=60%
 LogNamespace=so2-check
 
 [Install]

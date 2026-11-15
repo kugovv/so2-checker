@@ -62,8 +62,14 @@ def test_unconfigured_source_cannot_bind_or_fake_profile(client, db_factory):
     assert response.status_code == 503
     assert client.get("/api/me").json()["primary_uid"] is None
     assert client.get("/api/players/12345678").status_code == 503
-    assert client.get("/api/top").json()["players"] == []
     assert client.get("/api/status").json()["source_available"] is False
+
+
+def test_top_endpoint_removed_for_authenticated_and_anonymous_users(client):
+    assert client.get("/api/top").status_code == 404
+    login(client)
+    for mode in ("competitive", "allies"):
+        assert client.get("/api/top", params={"mode": mode}).status_code == 404
 
 
 def test_cached_profile_read_no_source_query_and_errors_keep_data(client, db_factory, monkeypatch):

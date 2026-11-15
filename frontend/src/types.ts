@@ -1,6 +1,6 @@
 export type Mode = 'competitive' | 'allies';
 export type Scope = 'last20' | 'archive';
-export type Tab = 'profile' | 'matches' | 'compare' | 'top';
+export type Tab = 'profile' | 'matches' | 'compare';
 export type RatingColor = 'red' | 'white' | 'green' | 'gold';
 export type Me = { primary_uid: string | null; mode: Mode };
 export type Status = { source_available: boolean; source_message: string; bot_username: string; formula_version: string };
@@ -20,10 +20,24 @@ export type Profile = {
   player: Player; mode: Mode; scope: Scope; summary: Summary; matches: Match[]; updated_at: string | null;
   refresh_state: string | null; source_error: string | null; gaps: { detected_at: string; reason: string }[]; history_complete: boolean;
 };
-export type TopPlayer = Summary & { uid: string; nickname: string | null };
-export type Top = { players: TopPlayer[]; provisional: TopPlayer[] };
 export type Participant = { uid: string | null; nickname: string | null; team: string | number | null; kills: number | null; deaths: number | null; assists: number | null; rating: number | null; rank: number | null; mmr_before: number | null; mmr_after: number | null };
 export type Detail = { match: Match; participants: Participant[]; explanation: { version: string; tier: string | null; inputs: Record<string, unknown>; parameters: Record<string, unknown>; factors: Record<string, unknown> | string[] }; gaps: unknown[] };
+export type PersonalMatchPlayer = {
+  nickname: string; aliases: string[]; uid: string | null; team: string | null;
+  kills: number | null; deaths: number | null; assists: number | null;
+  game_score: number | null; rank: number | null;
+  rating: number | null; rating_display: string | null; rating_color: RatingColor | null;
+  selected: boolean; user_confirmed: boolean;
+};
+export type PersonalMatchSnapshot = {
+  id: string; screenshot_id: number | null; source: 'screenshot' | 'automatic'; source_label: string;
+  mode: Mode; match_id: string | null; map: string | null; score: [number, number] | null;
+  ended_at: string | null; date_label: string | null; loaded_at: string;
+  nickname: string; requested_nickname: string | null; player_uid: string | null;
+  kills: number; deaths: number; assists: number; rating: number; rating_display: string; rating_color: RatingColor;
+  formula_version: string; rating_tier: 'match'; method_note: string; selected_index: number;
+  players: PersonalMatchPlayer[]; original_rating: number | null; original_rating_tier: string | null;
+};
 
 type TelegramApp = {
   initData: string; viewportHeight: number; viewportStableHeight: number;

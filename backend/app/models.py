@@ -116,3 +116,38 @@ class RefreshJob(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     error: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class ScreenshotMatch(Base):
+    __tablename__ = "screenshot_matches"
+    __table_args__ = (
+        UniqueConstraint("telegram_id", "mode", "dedup_key", name="uq_screenshot_owner_mode_key"),
+        Index("ix_screenshot_owner_mode_created", "telegram_id", "mode", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"))
+    mode: Mapped[str] = mapped_column(String(20))
+    dedup_key: Mapped[str] = mapped_column(String(64))
+    match_id: Mapped[Optional[str]] = mapped_column(String(128))
+    nickname: Mapped[str] = mapped_column(String(80))
+    kills: Mapped[int] = mapped_column(Integer)
+    deaths: Mapped[int] = mapped_column(Integer)
+    assists: Mapped[int] = mapped_column(Integer)
+    rating: Mapped[float] = mapped_column(Numeric(14, 8))
+    formula_version: Mapped[str] = mapped_column(String(32))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PersonalBest(Base):
+    __tablename__ = "personal_bests"
+    telegram_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(20), primary_key=True)
+    source: Mapped[str] = mapped_column(String(20))
+    source_key: Mapped[str] = mapped_column(String(256))
+    screenshot_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("screenshot_matches.id", ondelete="SET NULL"))
+    rating: Mapped[float] = mapped_column(Numeric(14, 8))
+    formula_version: Mapped[str] = mapped_column(String(32))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowDownUp, ArrowLeft, ArrowRight, Check, ChevronRight, Copy, Crosshair, ExternalLink, History, Info, LoaderCircle, Medal, RefreshCw, Search, Settings2, ShieldCheck, Target, TrendingUp, UserRound, UsersRound, X, WifiOff, Swords } from 'lucide-react';
+import { ArrowDownUp, ArrowLeft, ArrowRight, Check, ChevronRight, Copy, Crosshair, ExternalLink, History, Info, LoaderCircle, RefreshCw, Search, Settings2, ShieldCheck, Target, TrendingUp, UserRound, UsersRound, X, WifiOff, Swords } from 'lucide-react';
 import { api, errorText, setSessionToken } from './api';
 import { date, modeLabel, number, ratingColor, ratingText, stat } from './format';
-import type { Detail, Match, Me, Mode, Profile, Scope, Status, Tab, Top, TopPlayer } from './types';
+import type { Detail, Match, Me, Mode, PersonalMatchSnapshot, Profile, Scope, Status, Tab } from './types';
 import { HistoryChart } from './Chart';
+import { BestMatchCard, PersonalMatchDetail, UploadedMatches, usePersonalMatches } from './SavedMatches';
 
-type View = { tab: Tab; uid: string | null; match: string | null; settings: boolean; search: boolean };
-const initialView: View = { tab: 'profile', uid: null, match: null, settings: false, search: false };
+type View = { tab: Tab; uid: string | null; match: string | null; savedMatch: string | null; settings: boolean; search: boolean };
+const initialView: View = { tab: 'profile', uid: null, match: null, savedMatch: null, settings: false, search: false };
 const tabs: { id: Tab; title: string; icon: typeof UserRound }[] = [
   { id: 'profile', title: 'Профиль', icon: UserRound }, { id: 'matches', title: 'Матчи', icon: Swords },
-  { id: 'compare', title: 'Сравнение', icon: ArrowDownUp }, { id: 'top', title: 'Топ', icon: Medal },
+  { id: 'compare', title: 'Сравнение', icon: ArrowDownUp },
 ];
 
 export function Rating({ value, display, large = false }: { value: number | null; display?: string | null; large?: boolean }) {
@@ -53,11 +54,15 @@ export default function App() {
   const [scope, setScope] = useState<Scope>('last20');
   const [archive, setArchive] = useState<Profile | null>(null);
   const [archiveError, setArchiveError] = useState('');
+  const [selectedSaved, setSelectedSaved] = useState<PersonalMatchSnapshot | null>(null);
   const viewRef = useRef(view); viewRef.current = view;
   const meRef = useRef(me); meRef.current = me;
   const mode = me?.mode ?? 'competitive';
   const uid = view.uid ?? me?.primary_uid ?? null;
   const bot = status?.bot_username ?? 'so2_check_bot';
+  const ownContext = !view.uid || view.uid === me?.primary_uid;
+  const personal = usePersonalMatches(auth === 'ready' && ownContext && !view.settings && !view.search && (view.tab === 'profile' || view.tab === 'matches'), mode, epoch, me?.primary_uid ?? null);
+  useEffect(() => { setSelectedSaved(null); }, [mode, auth, ownContext]);
 
   const navigate = useCallback((next: Partial<View>, replace = false) => {
     setView(previous => { const state = { ...previous, ...next }; window.history[replace ? 'replaceState' : 'pushState'](state, ''); return state; });
@@ -66,7 +71,8 @@ export default function App() {
   }, []);
   const goBack = useCallback(() => {
     const v = viewRef.current;
-    if (v.match) navigate({ match: null }, true);
+    if (v.savedMatch) { setSelectedSaved(null); navigate({ savedMatch: null }, true); }
+    else if (v.match) navigate({ match: null }, true);
     else if (v.settings) navigate({ settings: false }, true);
     else if (v.search) navigate({ search: false }, true);
     else if (v.uid && v.uid !== meRef.current?.primary_uid) navigate({ uid: meRef.current?.primary_uid ?? null, tab: 'profile' }, true);
@@ -75,7 +81,7 @@ export default function App() {
 
   useEffect(() => {
     window.history.replaceState(initialView, '');
-    const pop = (e: PopStateEvent) => setView(e.state?.tab ? e.state : initialView);
+    const pop = (e: PopStateEvent) => setView(tabs.some(tab => tab.id === e.state?.tab) ? e.state : initialView);
     window.addEventListener('popstate', pop);
     const tg = window.Telegram?.WebApp;
     try { tg?.ready(); tg?.expand(); tg?.setHeaderColor('#171A1D'); tg?.setBackgroundColor('#171A1D'); } catch { /* Older Telegram versions keep their own chrome. */ }
@@ -92,7 +98,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     const tg = window.Telegram?.WebApp;
-    if (view.match || view.settings || view.search || view.tab !== 'profile' || (view.uid && view.uid !== me?.primary_uid)) tg?.BackButton.show(); else tg?.BackButton.hide();
+    if (view.savedMatch || view.match || view.settings || view.search || view.tab !== 'profile' || (view.uid && view.uid !== me?.primary_uid)) tg?.BackButton.show(); else tg?.BackButton.hide();
     tg?.BackButton.onClick(goBack);
     return () => tg?.BackButton.offClick(goBack);
   }, [view, me?.primary_uid, goBack]);
@@ -131,13 +137,13 @@ export default function App() {
     setSaving(true); setSettingError('');
     try {
       const user = await api<Me>('/me', { method: 'PUT', body: JSON.stringify({ primary_uid: newUid }) }); setMe(user);
-      navigate({ uid: newUid, settings: false, search: false, tab: 'profile', match: null }); setToast('Основной профиль сохранён');
+      setSelectedSaved(null); navigate({ uid: newUid, settings: false, search: false, tab: 'profile', match: null, savedMatch: null }); setToast('Основной профиль сохранён');
     } catch (e) { setSettingError(errorText(e)); } finally { setSaving(false); }
   }
   async function changeMode(next: Mode) {
     if (!me || mode === next) return;
     setSaving(true);
-    try { const user = await api<Me>('/me', { method: 'PUT', body: JSON.stringify({ mode: next }) }); setMe(user); navigate({ match: null }, true); }
+    try { const user = await api<Me>('/me', { method: 'PUT', body: JSON.stringify({ mode: next }) }); setMe(user); setSelectedSaved(null); navigate({ match: null, savedMatch: null }, true); }
     catch (e) { setToast(errorText(e)); } finally { setSaving(false); }
   }
   async function refresh() {
@@ -156,27 +162,35 @@ export default function App() {
       setEpoch(e => e + 1);
     } catch (e) { setError(errorText(e)); } finally { setRefreshing(false); }
   }
-  const openPlayer = (id: string) => { setScope('last20'); navigate({ uid: id, tab: 'profile', match: null, search: false, settings: false }); };
+  const openPlayer = (id: string) => { setScope('last20'); setSelectedSaved(null); navigate({ uid: id, tab: 'profile', match: null, savedMatch: null, search: false, settings: false }); };
+  const openSaved = (snapshot: PersonalMatchSnapshot) => { setSelectedSaved(snapshot); navigate({ savedMatch: snapshot.id, match: null }); };
+  const bestCard = <BestMatchCard best={personal.best} mode={mode} bot={bot} loading={personal.loading} error={personal.bestError} refresh={personal.refresh} onOpen={openSaved} />;
+  const uploadedMatches = <UploadedMatches matches={personal.matches} total={personal.uploadMeta.total} truncated={personal.uploadMeta.truncated} mode={mode} bot={bot} loading={personal.loading} error={personal.matchesError} refresh={personal.refresh} onOpen={openSaved} />;
+  const savedDetail = [personal.best, ...personal.matches, selectedSaved].find(snapshot => snapshot?.id === view.savedMatch && snapshot?.mode === mode) ?? null;
 
-  return <div className="app-shell"><header className="app-header"><button className="brand" aria-label="На главную" onClick={() => auth === 'ready' && navigate({ ...initialView, uid: me?.primary_uid ?? null })}><span className="brand-mark"><Crosshair size={23} /></span><span>SO2<span className="brand-accent"> CHECK</span><small>СТАТИСТИКА И ФОРМА</small></span></button><span className="version-tag">V1 / БЕТА</span>{auth === 'ready' && <div className="header-actions"><button className="icon-button" aria-label="Найти игрока" onClick={() => navigate({ search: !view.search, settings: false, match: null })}><Search size={20} /></button><button className="icon-button" aria-label="Настройки основного ID" onClick={() => { setSettingError(''); navigate({ settings: !view.settings, search: false, match: null }); }}><Settings2 size={20} /></button></div>}</header>
+  return <div className="app-shell"><header className="app-header"><button className="brand" aria-label="На главную" onClick={() => auth === 'ready' && navigate({ ...initialView, uid: me?.primary_uid ?? null })}><span className="brand-mark"><Crosshair size={23} /></span><span>SO2<span className="brand-accent"> CHECK</span><small>СТАТИСТИКА И ФОРМА</small></span></button><span className="version-tag">V1 / БЕТА</span>{auth === 'ready' && <div className="header-actions"><button className="icon-button" aria-label="Найти игрока" onClick={() => navigate({ search: !view.search, settings: false, match: null, savedMatch: null })}><Search size={20} /></button><button className="icon-button" aria-label="Настройки основного ID" onClick={() => { setSettingError(''); navigate({ settings: !view.settings, search: false, match: null, savedMatch: null }); }}><Settings2 size={20} /></button></div>}</header>
     {auth === 'loading' ? <main className="auth-loading"><Spinner text="Подключаемся к приложению…" /></main> : auth !== 'ready' ? <Intro bot={bot} authError={auth === 'error' ? authError : undefined} retry={signIn} /> : <>
       <main className="main-content">
         <div className="page-topline"><span className="eyebrow">{view.settings ? 'НАСТРОЙКИ' : view.search ? 'ПОИСК ИГРОКА' : tabs.find(t => t.id === view.tab)?.title.toUpperCase()}</span>{me?.primary_uid && <button className="text-button" onClick={() => openPlayer(me.primary_uid!)}><UserRound size={14} /> Мой аккаунт</button>}</div>
         {status && !status.source_available && <div className="source-banner" role="status"><span className="status-indicator" /><div><strong>Источник статистики не подключён</strong><p>{status.source_message || 'Доступ к игровым данным пока недоступен. Повторите позже.'}</p></div></div>}
         {view.settings ? <section className="panel settings-panel"><button className="back-link" onClick={goBack}><ArrowLeft size={16} /> Назад</button><h1>Основной профиль</h1><p>«Мой аккаунт» всегда открывает этот игровой ID. Поиск других игроков его не меняет.</p><UidForm label="Сменить основной игровой ID" button="Сохранить" value={me?.primary_uid ?? ''} loading={saving} onSubmit={savePrimary} />{settingError && <ErrorBox error={settingError} />}<div className="info-note"><Info size={17} /><span>Привязка сохраняет предпочтение для просмотра. Она не подтверждает владение игровым аккаунтом.</span></div><div className="settings-separator" /><FormulaInfo /></section> : view.search ? <section className="panel search-panel"><button className="back-link" onClick={goBack}><ArrowLeft size={16} /> Назад</button><h1>Открыть профиль</h1><p>Найдите игрока по публичному ID Standoff 2.</p><UidForm label="Игровой ID" button="Найти" loading={false} onSubmit={openPlayer} /><p className="micro">Ваш основной ID останется прежним.</p></section> : <>
           <div className="mode-switch" role="group" aria-label="Режим игры">{(['competitive', 'allies'] as Mode[]).map(m => <button key={m} aria-pressed={mode === m} className={mode === m ? 'active' : ''} disabled={saving} onClick={() => void changeMode(m)}><span>{modeLabel[m]}</span><small>{m === 'competitive' ? '5 × 5' : '2 × 2'}</small></button>)}</div>
-          {view.match && uid ? <MatchDetail id={view.match} uid={uid} onBack={goBack} openPlayer={openPlayer} /> : view.tab === 'top' ? <Leaderboard mode={mode} onPlayer={openPlayer} /> : view.tab === 'compare' ? <Comparison primaryUid={me?.primary_uid ?? null} primary={profile?.player.uid === me?.primary_uid ? profile : null} mode={mode} openPlayer={openPlayer} /> : !uid ? <section className="panel onboarding"><div className="onboard-icon"><Target size={32} /></div><span className="eyebrow">ВАША ТОЧКА ОТСЧЁТА</span><h1>Вся форма —<br />в одном профиле.</h1><p>Закрепите игровой ID и следите за последними 20 матчами выбранного режима.</p><UidForm label="Ваш игровой ID Standoff 2" button="Продолжить" loading={saving} onSubmit={savePrimary} />{settingError && <ErrorBox error={settingError} />}<div className="info-note"><ShieldCheck size={17} /><span>Это сохранение профиля для просмотра, а не подтверждение владения аккаунтом.</span></div></section> : <>
+          {view.savedMatch && ownContext ? (savedDetail ? <PersonalMatchDetail snapshot={savedDetail} onBack={goBack} /> : <Empty title="Матч не найден" action={<button className="text-button" onClick={goBack}>Вернуться</button>}>Откройте сохранённый матч из карточки или списка.</Empty>) : <>
+          {ownContext && !view.match && view.tab === 'profile' && !profile && bestCard}
+          {ownContext && !view.match && view.tab === 'matches' && uploadedMatches}
+          {view.match && uid ? <MatchDetail id={view.match} uid={uid} onBack={goBack} openPlayer={openPlayer} /> : view.tab === 'compare' ? <Comparison primaryUid={me?.primary_uid ?? null} primary={profile?.player.uid === me?.primary_uid ? profile : null} mode={mode} openPlayer={openPlayer} /> : !uid ? <section className="panel onboarding"><div className="onboard-icon"><Target size={32} /></div><span className="eyebrow">ВАША ТОЧКА ОТСЧЁТА</span><h1>Вся форма —<br />в одном профиле.</h1><p>Закрепите игровой ID и следите за последними 20 матчами выбранного режима.</p><UidForm label="Ваш игровой ID Standoff 2" button="Продолжить" loading={saving} onSubmit={savePrimary} />{settingError && <ErrorBox error={settingError} />}<div className="info-note"><ShieldCheck size={17} /><span>Это сохранение профиля для просмотра, а не подтверждение владения аккаунтом.</span></div></section> : <>
             {error && <ErrorBox error={error} retry={() => setEpoch(e => e + 1)} />}
             {loading && !profile ? <Spinner /> : !profile ? !error && <Empty title="Профиль пока не загружен">Нажмите обновить или откройте другого игрока.</Empty> : <>
               <ProfileHeader profile={profile} mode={mode} refreshing={refreshing} onRefresh={refresh} onCopy={async () => { try { await navigator.clipboard.writeText(profile.player.uid); setToast('Игровой ID скопирован'); } catch { setToast(`Игровой ID: ${profile.player.uid}`); } }} />
               {profile.source_error && <ErrorBox error={profile.source_error} retry={refresh} />}
-              {view.tab === 'profile' ? <><SummaryCard profile={profile} /><section className="section"><div className="section-heading"><h2><TrendingUp size={18} /> Динамика формы</h2><span className="micro">{mode === 'competitive' ? '5 × 5' : '2 × 2'}</span></div><div className="scope-switch"><button className={scope === 'last20' ? 'active' : ''} onClick={() => setScope('last20')}>Последние 20</button><button className={scope === 'archive' ? 'active' : ''} onClick={() => setScope('archive')}><History size={14} /> Сохранённая история</button></div>{archiveError && scope === 'archive' ? <ErrorBox error={archiveError} retry={() => setEpoch(e => e + 1)} /> : scope === 'archive' && !archive ? <Spinner text="Открываем сохранённую историю…" /> : <HistoryChart profile={scope === 'archive' ? archive! : profile} onMatch={id => navigate({ match: id })} />}</section><section className="section"><div className="section-heading"><h2>Последние матчи</h2><button className="text-button" onClick={() => navigate({ tab: 'matches' })}>Все <ArrowRight size={14} /></button></div><MatchList matches={profile.matches.slice(0, 3)} onMatch={id => navigate({ match: id })} /></section><FormulaInfo /></> : <section className="section"><div className="section-heading"><h1>Последние матчи</h1><span className="count-badge">{profile.matches.length} / 20</span></div><p className="section-description">Завершённые матчи · {modeLabel[mode].toLowerCase()}. От новых к старым.</p><MatchList matches={profile.matches} onMatch={id => navigate({ match: id })} /></section>}
+              {view.tab === 'profile' ? <><SummaryCard profile={profile} />{ownContext && bestCard}<section className="section"><div className="section-heading"><h2><TrendingUp size={18} /> Динамика формы</h2><span className="micro">{mode === 'competitive' ? '5 × 5' : '2 × 2'}</span></div><div className="scope-switch"><button className={scope === 'last20' ? 'active' : ''} onClick={() => setScope('last20')}>Последние 20</button><button className={scope === 'archive' ? 'active' : ''} onClick={() => setScope('archive')}><History size={14} /> Сохранённая история</button></div>{archiveError && scope === 'archive' ? <ErrorBox error={archiveError} retry={() => setEpoch(e => e + 1)} /> : scope === 'archive' && !archive ? <Spinner text="Открываем сохранённую историю…" /> : <HistoryChart profile={scope === 'archive' ? archive! : profile} onMatch={id => navigate({ match: id })} />}</section><section className="section"><div className="section-heading"><h2>Последние матчи</h2><button className="text-button" onClick={() => navigate({ tab: 'matches' })}>Все <ArrowRight size={14} /></button></div><MatchList matches={profile.matches.slice(0, 3)} onMatch={id => navigate({ match: id })} /></section><FormulaInfo /></> : <section className="section"><div className="section-heading"><h1>Последние матчи</h1><span className="count-badge">{profile.matches.length} / 20</span></div><p className="section-description">Завершённые матчи · {modeLabel[mode].toLowerCase()}. От новых к старым.</p><MatchList matches={profile.matches} onMatch={id => navigate({ match: id })} /></section>}
             </>}
+          </>}
           </>}
         </>}
         <footer className="app-footer">SO2 CHECK <span>·</span> С начала наблюдения <span>·</span> Независимый рейтинг</footer>
       </main>
-      <nav className="bottom-nav" aria-label="Основная навигация">{tabs.map(t => <button key={t.id} aria-current={view.tab === t.id ? 'page' : undefined} className={view.tab === t.id ? 'active' : ''} onClick={() => navigate({ tab: t.id, settings: false, search: false, match: null })}><t.icon size={21} strokeWidth={1.8} /><span>{t.title}</span></button>)}</nav>
+      <nav className="bottom-nav" aria-label="Основная навигация">{tabs.map(t => <button key={t.id} aria-current={view.tab === t.id ? 'page' : undefined} className={view.tab === t.id ? 'active' : ''} onClick={() => navigate({ tab: t.id, settings: false, search: false, match: null, savedMatch: null })}><t.icon size={21} strokeWidth={1.8} /><span>{t.title}</span></button>)}</nav>
     </>}{toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}</div>;
 }
 
@@ -231,14 +245,3 @@ function Comparison({ primaryUid, primary, mode, openPlayer }: { primaryUid: str
   ];
   return <section className="section"><h1>Лицом к лицу</h1><p className="section-description">Последние 20 доступных матчей каждого игрока. Один режим — общие правила.</p>{!primaryUid ? <Empty icon={<UsersRound size={29} />} title="Сначала выберите свой профиль">Закрепите основной игровой ID на вкладке «Профиль», чтобы сравнивать свою форму с другими.</Empty> : <><section className="panel compare-search"><UidForm label="ID второго игрока" button="Сравнить" loading={loading} value={otherUid} onSubmit={setOtherUid} /></section>{error && <ErrorBox error={error} retry={() => setEpoch(e => e + 1)} />}{loading && <Spinner text="Сопоставляем выборки…" />}{left && right ? <><div className="comparison-players"><button className="panel" onClick={() => openPlayer(left.player.uid)}><span className="eyebrow">ОСНОВНОЙ</span><strong>{left.player.nickname ?? 'Игрок'}</strong><small>ID {left.player.uid}</small><Rating value={left.summary.rating} display={left.summary.rating_display} /></button><span className="versus">×</span><button className="panel" onClick={() => openPlayer(right.player.uid)}><span className="eyebrow">СОПЕРНИК</span><strong>{right.player.nickname ?? 'Игрок'}</strong><small>ID {right.player.uid}</small><Rating value={right.summary.rating} display={right.summary.rating_display} /></button></div>{left.summary.tier !== right.summary.tier && <div className="info-note"><Info size={18} /><span>Методики оценки различаются. Рейтинги этих выборок напрямую несопоставимы.</span></div>}<div className="panel comparison-table">{rows.map(row => <div className="comparison-row" key={row.title}><span>{row.get(left)}</span><strong>{row.title}</strong><span>{row.get(right)}</span></div>)}</div><p className="micro">Разный размер выборки указан открыто. Сила соперников не оценивается без подтверждённого исторического MMR.</p></> : !loading && !error && <Empty icon={<ArrowDownUp size={29} />} title="С кем сравним форму?">Введите ID второго игрока. Поиск не изменит ваш основной профиль.</Empty>}</>}</section>;
 }
-
-function Leaderboard({ mode, onPlayer }: { mode: Mode; onPlayer: (uid: string) => void }) {
-  const [top, setTop] = useState<Top | null>(null);
-  const [error, setError] = useState('');
-  const [epoch, setEpoch] = useState(0);
-  useEffect(() => { let active = true; setTop(null); setError(''); api<Top>(`/top?mode=${mode}`).then(data => { if (active) setTop(data); }).catch(e => { if (active) setError(errorText(e)); }); return () => { active = false; }; }, [mode, epoch]);
-  const list = (players: TopPlayer[], provisional = false) => <div className="leaderboard-list">{players.map((p, i) => <button className="leaderboard-row panel" key={p.uid} onClick={() => onPlayer(p.uid)}><span className={`rank-position ${i < 3 && !provisional ? 'podium' : ''}`}>{provisional ? '·' : String(i + 1).padStart(2, '0')}</span><span className="leaderboard-player"><strong>{p.nickname ?? 'Игрок'}</strong><small>ID {p.uid} · {p.count} из 20 матчей</small><small className="method-label">{p.tier === 'rounds' ? 'По личным раундам' : p.tier === 'match' ? 'Упрощённая за матч' : 'Разные методики'}</small></span><Rating value={p.rating} display={p.rating_display} /><ChevronRight size={15} /></button>)}</div>;
-  return <section className="section"><div className="section-heading"><h1>Топ наблюдаемых</h1><Medal size={23} className="orange-text" /></div><p className="section-description">Среди игроков, которых отслеживает приложение. Свежая форма · {modeLabel[mode].toLowerCase()}.</p><div className="info-note"><ShieldCheck size={18} /><span>Основной топ — полная выборка из 20 матчей. Рейтинг предварительный; методики расчёта разделены.</span></div>{error ? <ErrorBox error={error} retry={() => setEpoch(e => e + 1)} /> : !top ? <Spinner /> : <>{top.players.length ? list(top.players) : <Empty icon={<Medal size={30} />} title="Топ пока формируется">Здесь появятся отслеживаемые игроки с полной выборкой из 20 матчей этого режима.</Empty>}{top.provisional.length > 0 && <><div className="section-heading"><h2>Неполная выборка</h2><span className="micro">ПРЕДВАРИТЕЛЬНО</span></div>{list(top.provisional, true)}</>}</>}<p className="micro top-footnote">Это не мировой рейтинг Standoff 2. Одинаковый средний рейтинг не меняется из-за показателей стабильности.</p></section>;
-}
-
-

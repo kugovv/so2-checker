@@ -108,24 +108,3 @@ def test_worker_pagination_bridges_gap_atomically(db_factory, monkeypatch):
         assert db.get(m.RefreshJob, job_id).state == "done"
         assert db.scalar(select(func.count()).select_from(m.HistoryGap)) == 0
         assert len(recent_rows(db, "12345678", "competitive")) == 2
-
-
-def test_top_full_sample_only_and_separate_modes(db):
-    from app.top import get_leaderboard
-    complete = upsert_profile(db, profile("111"))
-    partial = upsert_profile(db, profile("222"))
-    fallback = upsert_profile(db, profile("333"))
-    untracked = upsert_profile(db, profile("444"))
-    for i, person in enumerate((complete, partial, fallback), 1):
-        db.add(m.User(telegram_id=i, primary_uid=person.uid))
-    for i in range(1, 21):
-        ingest_page(db, "111", "competitive", HistoryPage([match(f"a{i}", uid="111", day=i)]))
-        ingest_page(db, "333", "competitive", HistoryPage([match(f"b{i}", uid="333", day=i, rounds=None)]))
-        ingest_page(db, "444", "competitive", HistoryPage([match(f"c{i}", uid="444", day=i)]))
-    ingest_page(db, "222", "competitive", HistoryPage([match("partial", uid="222")]))
-    db.commit()
-    top = get_leaderboard(db, "competitive")
-    assert [item["uid"] for item in top["players"]] == ["111"]
-    assert {item["uid"] for item in top["provisional"]} == {"222", "333"}
-    assert next(item for item in top["provisional"] if item["uid"] == "333")["tier"] == "match"
-    assert get_leaderboard(db, "allies")["players"] == []

@@ -17,8 +17,8 @@ from .config import get_settings
 from .db import get_db
 from .rating import VERSION, summarize
 from .service import aware, match_card, queue_refresh, recent_rows, serialize_profile, upsert_profile
-from .top import get_leaderboard
 from .source import PlayerNotFound, SourceUnavailable, source
+from .personal_matches import ensure_personal_user, get_personal_best, get_screenshot_match, list_screenshot_matches
 
 app = FastAPI(title="Зона 9 · Standoff Checker", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(CORSMiddleware,
@@ -102,11 +102,7 @@ def authenticate(body: AuthBody, response: Response, db: Session = Depends(get_d
         identity = validate_init_data(body.init_data, config.bot_token, config.auth_max_age)
     except (ValueError, InvalidInitData):
         raise HTTPException(401, "Не удалось подтвердить вход. Откройте приложение заново через Telegram-бота.") from None
-    user = db.get(m.User, identity["id"])
-    if user is None:
-        user = m.User(telegram_id=identity["id"])
-        db.add(user)
-        db.flush()
+    user = ensure_personal_user(db, identity["id"])
     user.last_active = m.utcnow()
     db.execute(delete(m.AuthSession).where(m.AuthSession.expires_at < m.utcnow()))
     # Reopening the Mini App replaces this user's sessions, bounding storage.
@@ -123,6 +119,26 @@ def authenticate(body: AuthBody, response: Response, db: Session = Depends(get_d
 @app.get("/api/me")
 def me(user=Depends(current_user)):
     return user_view(user)
+
+
+@app.get("/api/me/best")
+def personal_best(mode: Mode = "competitive", user=Depends(current_user), db: Session = Depends(get_db)):
+    best = get_personal_best(db, user, mode)
+    db.commit()
+    return {"best": best}
+
+
+@app.get("/api/me/screenshot-matches")
+def screenshot_matches(mode: Mode = "competitive", user=Depends(current_user), db: Session = Depends(get_db)):
+    return list_screenshot_matches(db, user, mode)
+
+
+@app.get("/api/me/screenshot-matches/{screenshot_id}")
+def screenshot_match(screenshot_id: int, user=Depends(current_user), db: Session = Depends(get_db)):
+    match = get_screenshot_match(db, user, screenshot_id)
+    if match is None:
+        raise HTTPException(404, "Матч не найден в ваших загрузках")
+    return {"match": match}
 
 
 async def resolve_player(uid, db):
@@ -214,8 +230,3 @@ def match_detail(match_id: str, uid: str, user=Depends(current_user), db: Sessio
             "explanation": {"version": participant.formula_version, "tier": participant.rating_tier,
                             "inputs": participant.rating_inputs, "parameters": participant.rating_parameters,
                             "factors": participant.rating_factors}}
-
-
-@app.get("/api/top")
-def leaderboard(mode: Mode = "competitive", user=Depends(current_user), db: Session = Depends(get_db)):
-    return get_leaderboard(db, mode)

@@ -41,6 +41,13 @@ def harness(monkeypatch, *, locked=True, webhook=""):
             calls["answers"].append((self.chat.type, text, kwargs))
 
     class Dispatcher:
+        def __init__(self, **kwargs):
+            assert kwargs["storage"] is not None
+            assert kwargs["events_isolation"] is not None
+
+        def include_router(self, router):
+            calls["screenshot_router"] = router
+
         def message(self, *filters):
             def register(handler):
                 self.start_handler = handler
@@ -49,7 +56,7 @@ def harness(monkeypatch, *, locked=True, webhook=""):
 
         async def start_polling(self, fake_bot, **kwargs):
             calls["polls"] += 1
-            assert kwargs["allowed_updates"] == ["message"]
+            assert kwargs["allowed_updates"] == ["message", "callback_query"]
             await self.start_handler(Message("private"))
             await self.start_handler(Message("group"))
 
@@ -71,6 +78,8 @@ def test_start_replies_with_mini_app_button_without_chat_stats(monkeypatch):
     assert button.web_app.url == "https://frontend.example.test/app/"
     assert calls["menu"].web_app.url == button.web_app.url
     assert calls["commands"][0].command == "start"
+    assert any(command.command == "match" for command in calls["commands"])
+    assert calls["screenshot_router"].name == "screenshot-ratings"
     assert group[0] == "group" and "reply_markup" not in group[2]
     assert calls["closed"] and calls["lock_closed"]
 

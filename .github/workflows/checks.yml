@@ -18,7 +18,12 @@ jobs:
         working-directory: backend
       - run: pip install -r game_client/requirements.txt
         working-directory: backend
+      - name: Install local scoreboard OCR and language packs
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus
       - run: python -m pytest -q
+        env:
+          RUN_OCR_INTEGRATION: '1'
+          OMP_THREAD_LIMIT: '1'
         working-directory: backend
   frontend:
     runs-on: ubuntu-latest
