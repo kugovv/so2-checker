@@ -1,4 +1,5 @@
 from decimal import Decimal
+import pytest
 
 from sqlalchemy import select
 
@@ -32,15 +33,25 @@ def test_weak_branch_not_lifted_toward_neutral_and_neutral_is_continuous():
     assert strong['value']==Decimal('1.85479031') and strong['factors']['exponent']==.6
 
 
-def test_source_result_is_context_only_not_a_rating_component(db):
+@pytest.mark.parametrize('mode,expected',[('allies','0.33461538'),('competitive','0.45408163')])
+def test_source_result_is_context_only_not_a_rating_component(db,mode,expected):
     player=upsert_profile(db,profile())
     for number,score,result in [('win',[8,6],'win'),('loss',[6,8],'loss')]:
-        item=match(number,mode='allies',kills=3,deaths=11,assists=1,headshots=None,rounds=None)
+        item=match(number,mode=mode,kills=3,deaths=11,assists=1,headshots=None,rounds=None)
         item.score=score;item.participants[0].result=result
-        ingest_page(db,player.uid,'allies',HistoryPage([item]))
+        ingest_page(db,player.uid,mode,HistoryPage([item]))
     rows=list(db.scalars(select(m.Participant)))
     assert {p.result for p in rows}=={'win','loss'}
-    assert {p.rating for p in rows}=={Decimal('0.33461538')}
+    assert {p.rating for p in rows}=={Decimal(expected)}
+
+
+def test_competitive_weak_range_is_linear_without_neutral_pull():
+    for k,d,a,expected in [(0,14,0,'0.14'),(3,11,1,'0.45'),(6,11,2,'0.69'),(10,10,3,'1.02')]:
+        assert displayed(calculate_match('competitive',k,d,a,score=[8,6])['value'])==expected
+    low=calculate_match('competitive',2,12,0,score=[8,6])['value']
+    high=calculate_match('competitive',10,10,4,score=[8,6])['value']
+    midpoint=calculate_match('competitive',6,11,2,score=[8,6])['value']
+    assert abs(midpoint-(low+high)/2)<=Decimal('.00000001')
 
 
 def test_v2_archive_recalculates_weak_matches_without_touching_competitive(db_factory,monkeypatch):
