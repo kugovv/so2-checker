@@ -180,3 +180,15 @@ def test_manual_import_flag_enforced_at_storage_boundary(db,monkeypatch):
     from tests.test_personal_matches import board
     monkeypatch.setattr(get_settings(),'manual_import_enabled',False)
     with pytest.raises(ValueError,match='отключён'):save_screenshot_match(db,100,board())
+
+
+def test_worker_restart_does_not_retry_oom_or_interrupted_frames_forever(client,db_factory,enabled,monkeypatch):
+    from app import collector_worker
+    monkeypatch.setattr(collector_worker,'SessionLocal',db_factory)
+    job=claim(client).json()['id'];assert upload(client,job).status_code==200
+    with db_factory() as db:
+        frame=db.scalar(select(c.Frame));frame.status='processing';frame.analysis={'attempts':2};db.commit()
+    collector_worker.recover_and_schedule()
+    with db_factory() as db:
+        frame=db.scalar(select(c.Frame));assert frame.status=='needs_review'
+        assert frame.analysis['reason']=='INTERRUPTED_RETRY_LIMIT'

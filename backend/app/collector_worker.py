@@ -15,9 +15,13 @@ async def process_frame():
     with SessionLocal() as db:
         frame=db.scalar(select(c.Frame).where(c.Frame.status=='queued').order_by(c.Frame.created_at).with_for_update(skip_locked=True).limit(1))
         if frame is None:return False
-        frame_id=frame.id;frame.status='processing';db.commit()
+        attempts=int(frame.analysis.get('attempts',0))+1
+        if attempts>2:
+            frame.status='needs_review';frame.analysis={'attempts':attempts,'reason':'INTERRUPTED_RETRY_LIMIT'};db.commit();return True
+        frame_id=frame.id;frame.status='processing';frame.analysis={'attempts':attempts};db.commit()
         path=(Path(get_settings().collector_storage)/frame.storage_path).resolve()
-        if not path.is_relative_to(Path(get_settings().collector_storage).resolve()):return False
+        if not path.is_relative_to(Path(get_settings().collector_storage).resolve()):
+            frame.status='needs_review';frame.analysis={'attempts':attempts,'reason':'INVALID_EVIDENCE_PATH'};db.commit();return True
         try:raw=path.read_bytes()
         except OSError:
             frame.status='needs_review';frame.analysis={'reason':'EVIDENCE_UNAVAILABLE'};db.commit();return True
@@ -39,6 +43,7 @@ async def process_frame():
         analysis={'reason':'SCREEN_OR_OCR_UNCERTAIN'}
     with SessionLocal() as db:
         frame=db.get(c.Frame,frame_id);frame.status=status;frame.parser_version=collector.PARSER_VERSION
+        analysis['attempts']=attempts
         frame.match_id=analysis.get('match_id');frame.analysis=analysis
         lease=db.get(c.Lease,frame.lease_id);job=db.get(c.Job,lease.job_id)
         if board is not None and board.match_id:
@@ -60,7 +65,10 @@ def recover_and_schedule():
     with SessionLocal() as db:
         collector.expire_leases(db);collector.materialize_night(db)
         # One worker owns the existing PG advisory lock; interrupted parses retry.
-        for frame in db.scalars(select(c.Frame).where(c.Frame.status=='processing')):frame.status='queued'
+        for frame in db.scalars(select(c.Frame).where(c.Frame.status=='processing')):
+            if int(frame.analysis.get('attempts',0))>=2:
+                frame.status='needs_review';frame.analysis={**frame.analysis,'reason':'INTERRUPTED_RETRY_LIMIT'}
+            else:frame.status='queued'
         db.commit()
 
 
