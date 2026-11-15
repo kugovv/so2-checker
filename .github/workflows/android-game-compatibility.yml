@@ -49,6 +49,8 @@ jobs:
           persist-credentials: false
       - name: Verify ephemeral runner and record capacity
         run: python3 tools/android-game-compat.py --phase before
+      - name: Check certificate-output compatibility against observed SDK formats
+        run: python3 -m unittest discover -s tools/tests -p test_android_apk_diagnostics.py -v
       - name: Diagnose APK signature on the host without booting Android
         id: verifier
         if: ${{ inputs.verify_only }}

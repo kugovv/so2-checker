@@ -279,16 +279,24 @@ def build_tool(name):
     return str(candidates[0])
 
 
+def signer_certificate_digests(output):
+    """Accept the old and Build Tools 37 certificate labels, never key hashes."""
+    matches = re.findall(
+        r"^(?:Signer #\d+|V[1-4](?:\.\d+)? Signer:) certificate SHA-256 digest: ([a-fA-F0-9]{64})\s*$",
+        output, re.MULTILINE,
+    )
+    return {value.lower() for value in matches}, len(matches)
+
+
 def verify_apk(path, *, signature_only=False):
     executable = build_tool("apksigner")
     code, output, errors = command([executable, "verify", "--verbose", "--print-certs", str(path)], timeout=60)
-    matches = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]{64})", output)
-    certificates = {value.lower() for value in matches}
+    certificates, match_count = signer_certificate_digests(output)
     tool_path = Path(executable)
     diagnostic = {"tool": tool_path.name, "build_tools_version": tool_path.parent.name,
                   "tool_relative_path": "build-tools/" + tool_path.parent.name + "/" + tool_path.name,
                   "tool_executable": os.access(executable, os.X_OK), "exit_code": code,
-                  "observed_signer_sha256": sorted(certificates), "signer_digest_matches": len(matches),
+                  "observed_signer_sha256": sorted(certificates), "signer_digest_matches": match_count,
                   "verification_stdout": output.encode("utf-8")[:4096].decode("utf-8", errors="ignore"),
                   "verification_stderr": errors.encode("utf-8")[:4096].decode("utf-8", errors="ignore")}
     if code is None or code != 0:
