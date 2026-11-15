@@ -17,6 +17,7 @@ class User(Base):
     primary_uid: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("players.uid"))
     mode: Mapped[str] = mapped_column(String(20), default="competitive")
     screenshot_nickname: Mapped[Optional[str]] = mapped_column(String(80))
+    preferred_uid: Mapped[Optional[str]] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_active: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -131,6 +132,8 @@ class ScreenshotMatch(Base):
     dedup_key: Mapped[str] = mapped_column(String(64))
     match_id: Mapped[Optional[str]] = mapped_column(String(128))
     nickname: Mapped[str] = mapped_column(String(80))
+    provenance: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
+    verification_status: Mapped[str] = mapped_column(String(32), default="self_confirmed", server_default="self_confirmed")
     kills: Mapped[int] = mapped_column(Integer)
     deaths: Mapped[int] = mapped_column(Integer)
     assists: Mapped[int] = mapped_column(Integer)

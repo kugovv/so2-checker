@@ -74,6 +74,12 @@
 .saved-player-row>.saved-rating{font-size:14px;text-align:right}
 .saved-missing{display:block;font-size:14px;line-height:1.2;color:#8d9aa5;white-space:nowrap}
 .saved-detail-note{margin-top:14px}
+.night-status,.pending-profile{padding:14px;margin:12px 0;font-size:11px;line-height:1.65;overflow-wrap:anywhere}
+.night-status h2,.pending-profile h2{font-size:15px;margin-bottom:7px}
+.night-status>p,.pending-profile>p{color:#a4adb5;margin-top:7px}
+.night-status dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:11px 0 8px}
+.night-status dt{font-size:9px;color:#a4adb5}.night-status dd{margin:3px 0 0;color:#f0f1f2;font-size:11px}
+.night-state{color:#ff9b59;font-size:11px}.night-status .night-incomplete{color:#ffb483}
 :root{--rating-red:#ff5261;--rating-green:#25e582;--rating-gold:#edbd50}
 .red,.rating.red{color:var(--rating-red)}
 .green,.rating.green{color:var(--rating-green)}

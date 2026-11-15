@@ -236,6 +236,10 @@ class ScreenshotController:
             await self.answer(message, "Чтобы сменить сохранённый ник, пришлите следующий скриншот с новым ником в подписи. Я заменю ник только после подтверждения вашей строки и сохранения матча.")
 
     async def upload(self, message, state, bot):
+        from .config import get_settings
+        if not get_settings().manual_import_enabled:
+            await self.answer(message,'Ручной импорт временно отключён владельцем сервиса.')
+            return
         if message.chat.type != "private":
             await self.answer(message, "Пришлите скриншот в личный чат с ботом.")
             return

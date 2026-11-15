@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     history_max_pages: int = 10
     source_adapter: str = ""
     allowed_origins: str = ""
+    collector_enabled: bool = False
+    collector_schedule_enabled: bool = False
+    collector_storage: str = "/var/lib/so2-check/collector"
+    collector_max_storage_mb: int = 512
+    collector_pilot_uid: str = "202777998"
+    collector_lease_seconds: int = 1800
+    manual_import_enabled: bool = True
 
 
 @lru_cache

@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 from app.config import get_settings
 from app.db import Base
 from app import models  # register tables
+from app import collector_models  # protocol-1 queue and evidence tables
 
 config = context.config
 if config.config_file_name:

@@ -166,24 +166,26 @@ async def _terminate_worker(process):
         pass
 
 
-async def _run_worker(payload):
+async def _run_worker(payload, *, module="app.screenshot_ocr_worker"):
+    if module not in {'app.screenshot_ocr_worker','app.collector_vision_worker'}:
+        raise ValueError('Unsupported internal OCR worker')
     # The parent owns cleanup even when SIGKILL prevents worker finally blocks.
     temporary_root = Path(tempfile.gettempdir()).resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="so2-scoreboard-", dir=str(temporary_root)) as directory:
         scratch = Path(directory).resolve(strict=True)
         if scratch.parent != temporary_root or not scratch.name.startswith("so2-scoreboard-"):
             raise OCRException("Распознавание временно недоступно. Попробуйте ещё раз чуть позже.")
-        return await _run_worker_in_scratch(payload, scratch)
+        return await _run_worker_in_scratch(payload, scratch, module=module)
 
 
-async def _run_worker_in_scratch(payload, scratch):
+async def _run_worker_in_scratch(payload, scratch, *, module="app.screenshot_ocr_worker"):
     process = None
     tasks = []
     try:
         environment = worker_environment()
         environment.update({name: str(scratch) for name in ("TMPDIR", "TMP", "TEMP")})
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "app.screenshot_ocr_worker",
+            sys.executable, "-m", module,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             cwd=str(Path(__file__).resolve().parents[1]), env=environment,
             limit=128 * 1024, start_new_session=_POSIX, close_fds=True,

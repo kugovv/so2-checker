@@ -118,7 +118,7 @@ async function installFixtures(page, state, inside) {
     if (method === 'OPTIONS') return respond({});
     if (endpoint === '/status') return respond({ source_available: state.sourceAvailable,
       source_message: state.sourceAvailable ? '' : 'Тестовое состояние: игровой источник временно недоступен.',
-      bot_username: 'so2_check_bot', formula_version: VERSION });
+      bot_username: 'so2_check_bot', formula_version: VERSION, collector_enabled: !!state.collector });
     if (endpoint === '/auth') {
       if (state.authFail) return respond({ detail: 'Тестовое состояние: подпись Telegram отклонена.' }, 401);
       if (body.init_data !== INIT_DATA) {
@@ -135,7 +135,7 @@ async function installFixtures(page, state, inside) {
       if (method === 'PUT') {
         state.mutations.push(structuredClone(body));
         if (body.primary_uid && state.failResolve) return respond({ detail: 'Тестовое состояние: источник статистики временно недоступен.' }, 503);
-        if (body.primary_uid) state.me.primary_uid = body.primary_uid;
+        if (body.primary_uid) { state.me.primary_uid = body.primary_uid; if (state.collector) state.me.id_status = 'pending'; }
         if (body.mode) state.me.mode = body.mode;
       }
       return respond(state.me);
@@ -153,6 +153,14 @@ async function installFixtures(page, state, inside) {
     if (playerMatch) {
       await delay(state.profileDelay);
       if (state.failResolve) return respond({ detail: 'Тестовое состояние: источник статистики временно недоступен.' }, 503);
+      if (state.collector) {
+        const pending = profile(playerMatch[1], mode, 'last20', true);
+        pending.player.nickname = null; pending.data_status = 'pending';
+        pending.collector_status = { status: 'awaiting_first', label: 'Ожидает первого обновления', last_success_at: null,
+          next_run_at: '2026-11-17T00:00:00+03:00', timezone: 'Europe/Moscow', schedule_enabled: false,
+          navigation_calibrated: false, last_success_msk: null, next_run_msk: '17.11.2026, 00:00 МСК' };
+        return respond(pending);
+      }
       return respond(profile(playerMatch[1], mode, url.searchParams.get('scope') || 'last20', state.empty));
     }
     if (/^\/players\/\d+\/refresh$/.test(endpoint)) return respond({ state: 'cached', job_id: null });
@@ -241,12 +249,12 @@ async function runWidth(browser, width) {
     await expect(page.getByLabel('Ваш игровой ID Standoff 2')).toHaveAttribute('inputmode', 'numeric');
     state.failResolve = true;
     await page.getByLabel('Ваш игровой ID Standoff 2').fill(PRIMARY);
-    await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('временно недоступен');
     assert.equal(state.me.primary_uid, null, 'Failed source lookup must not bind primary ID');
     await noHorizontal(page, 'source-error', width);
     state.failResolve = false;
-    await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
     await expect(page.locator('.rating-large')).toBeVisible();
     assert.equal(state.me.primary_uid, PRIMARY);
     await expect(page.locator('.rating-large')).toHaveText('1.10');
@@ -357,7 +365,7 @@ async function runWidth(browser, width) {
     await noHorizontal(page, 'keyboard-simulated', width);
     await page.evaluate(() => { window.Telegram.WebApp.viewportHeight = innerHeight; window.__uiEmit('viewportChanged'); });
     await page.getByLabel('Сменить основной игровой ID').fill(SECOND);
-    await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
     await expect(page.locator('.copy-id')).toContainText(SECOND);
     assert.equal(state.me.primary_uid, SECOND, 'Explicit settings change must persist primary ID');
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -507,14 +515,14 @@ async function runPersonalWidth(browser, width) {
     await page.getByRole('button', { name: 'Настройки основного ID', exact: true }).click();
     await page.getByLabel('Сменить основной игровой ID').fill(SECOND);
     state.personal.competitive.best = replacement;
-    await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
     await expect(page.locator('.copy-id')).toContainText(SECOND);
     await expect(best.locator('.saved-rating')).toHaveText('2.37');
     await expect(best.locator('.saved-source')).toHaveText('Со скриншота');
     await page.getByRole('button', { name: 'Настройки основного ID', exact: true }).click();
     await page.getByLabel('Сменить основной игровой ID').fill(PRIMARY);
     state.personal.competitive.best = autoRecord;
-    await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
     await expect(page.locator('.copy-id')).toContainText(PRIMARY);
     await expect(best.locator('.saved-rating')).toHaveText('2.49');
     results.push({ width, check: 'record_refreshes_when_primary_uid_changes', passed: true });
@@ -546,6 +554,7 @@ async function runPersonalWidth(browser, width) {
       console.log(`Isolated UI fixtures: checking ${width}px`);
       await runWidth(browser, width);
       await runPersonalWidth(browser, width);
+      await runCollectorWidth(browser, width);
     }
   } finally { await browser.close(); }
   const report = { environment: 'isolated-local-browser-fixtures', ui_url: UI_URL,
@@ -560,3 +569,38 @@ async function runPersonalWidth(browser, width) {
   console.error(`Could not execute isolated browser QA: ${error.message}`);
   process.exitCode = 1;
 });
+
+async function runCollectorWidth(browser, width) {
+  let item;
+  try {
+    const state = fixtureState({ collector: true, sourceAvailable: false });
+    item = await newCase(browser, width, state);
+    const page = item.page;
+    await page.getByLabel('Ваш игровой ID Standoff 2').fill(PRIMARY);
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
+    await expect(page.getByLabel('Профиль ожидает проверки')).toContainText('ID сохранён. Ожидает первого обновления');
+    await expect(page.locator('.rating-large')).toHaveCount(0);
+    await expect(page.locator('.chart-container')).toHaveCount(0);
+    await expect(page.getByLabel('Ночное обновление')).toContainText('17.11.2026, 00:00 МСК');
+    await expect(page.getByLabel('Ночное обновление')).toContainText('Ещё не выполнялось');
+    await noHorizontal(page, 'collector-pending-id', width);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.getByLabel('Профиль ожидает проверки')).toContainText(PRIMARY);
+    assert.equal(state.me.primary_uid, PRIMARY);
+    await page.getByRole('button', { name: 'Обновить данные и статус', exact: true }).click();
+    assert.equal(state.calls.some(c => c.endpoint.endsWith('/refresh')), false, 'Page refresh must not dispatch a phone job');
+    await page.getByRole('button', { name: 'Найти игрока', exact: true }).click();
+    await page.getByLabel('Игровой ID', { exact: true }).fill(SECOND);
+    await page.getByRole('button', { name: 'Найти', exact: true }).click();
+    await expect(page.getByLabel('Профиль ожидает проверки')).toContainText(SECOND);
+    assert.equal(state.me.primary_uid, PRIMARY);
+    await page.getByRole('button', { name: 'Изменить ID', exact: true }).click();
+    await page.getByLabel('Сменить основной игровой ID').fill(SECOND);
+    await page.getByRole('button', { name: 'Сохранить ID', exact: true }).click();
+    await expect(page.getByLabel('Профиль ожидает проверки')).toContainText('ID сохранён.');
+    assert.equal(state.me.primary_uid, SECOND);
+    await noHorizontal(page, 'collector-primary-changed', width);
+    results.push({ width, check: 'collector_pending_id_persistence_schedule_no_fake_stats_and_readonly_refresh', passed: true });
+  } catch (error) { failures.push({ width, message: error.message }); }
+  finally { if (item) await closeCase(item); }
+}

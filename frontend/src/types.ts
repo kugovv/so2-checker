@@ -2,8 +2,9 @@ export type Mode = 'competitive' | 'allies';
 export type Scope = 'last20' | 'archive';
 export type Tab = 'profile' | 'matches' | 'compare';
 export type RatingColor = 'red' | 'white' | 'green' | 'gold';
-export type Me = { primary_uid: string | null; mode: Mode };
-export type Status = { source_available: boolean; source_message: string; bot_username: string; formula_version: string };
+export type Me = { primary_uid: string | null; mode: Mode; id_status?: 'pending' | 'known' };
+export type Status = { source_available: boolean; source_message: string; bot_username: string; formula_version: string; collector_enabled?: boolean; manual_import_enabled?: boolean };
+export type CollectorStatus = { status: string; label: string; last_success_at: string | null; next_run_at: string; timezone: string; schedule_enabled: boolean; navigation_calibrated: boolean; last_success_msk: string | null; next_run_msk: string };
 export type Summary = {
   count: number; rated_count: number; rating: number | null; rating_display: string | null; rating_color: RatingColor | null;
   kd: number | null; kd_infinite: boolean; avg: number | null; assists: number | null; hs_percent: number | null;
@@ -17,6 +18,7 @@ export type Match = {
 };
 export type Player = { uid: string; nickname: string | null; avatar_url: string | null; current_mmr: Partial<Record<Mode, number | null>> };
 export type Profile = {
+  data_status?: 'pending' | 'available' | 'empty_verified'; collector_status?: CollectorStatus;
   player: Player; mode: Mode; scope: Scope; summary: Summary; matches: Match[]; updated_at: string | null;
   refresh_state: string | null; source_error: string | null; gaps: { detected_at: string; reason: string }[]; history_complete: boolean;
 };

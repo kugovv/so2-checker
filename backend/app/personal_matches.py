@@ -371,6 +371,8 @@ def _select_best(db, user, mode):
 
 def save_screenshot_match(db, telegram_id: int, payload: dict) -> dict:
     """Persist a user-confirmed board; caller commits/rolls back its transaction."""
+    from .config import get_settings
+    if not get_settings().manual_import_enabled:raise ValueError('Ручной импорт отключён владельцем сервиса')
     payload = _normalize_payload(payload)
     user = ensure_personal_user(db, telegram_id, lock=True)
     mode = payload["mode"]

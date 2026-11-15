@@ -1,6 +1,7 @@
 """Durable queue, one fetch at a time, no continuous scan of followed profiles."""
 import asyncio
 import logging
+import time
 from datetime import timedelta
 
 from sqlalchemy import select, text
@@ -62,13 +63,24 @@ async def run():
         if not lock_connection.scalar(text("SELECT pg_try_advisory_lock(72910423)")):
             raise RuntimeError("An update worker is already running")
     try:
+        if config.collector_enabled:
+            from .collector_worker import recover_and_schedule
+            recover_and_schedule()
         # On a process restart, interrupted requests are safe to retry because ingestion is atomic.
         with SessionLocal() as db:
             for job in db.scalars(select(m.RefreshJob).where(m.RefreshJob.state == "running")):
                 job.state = "pending"
                 job.requested_at = m.utcnow()
             db.commit()
+        collector_tick=0;collector_prune=0
         while True:
+            if config.collector_enabled:
+                from .collector_worker import process_frame,schedule_tick,prune_evidence
+                if time.monotonic()-collector_tick>30:
+                    schedule_tick();collector_tick=time.monotonic()
+                if time.monotonic()-collector_prune>3600:
+                    prune_evidence();collector_prune=time.monotonic()
+                if await process_frame():continue
             job_id = None
             with SessionLocal() as db:
                 job = db.scalar(select(m.RefreshJob).where(m.RefreshJob.state == "pending", m.RefreshJob.requested_at <= m.utcnow())

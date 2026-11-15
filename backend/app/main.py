@@ -7,6 +7,9 @@ from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
@@ -19,8 +22,20 @@ from .rating import VERSION, summarize
 from .service import aware, match_card, queue_refresh, recent_rows, serialize_profile, upsert_profile
 from .source import PlayerNotFound, SourceUnavailable, source
 from .personal_matches import ensure_personal_user, get_personal_best, get_screenshot_match, list_screenshot_matches
+from .collector_api import router as collector_router,MAX_BODY
+from . import collector
 
 app = FastAPI(title="Зона 9 · Standoff Checker", docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(collector_router)
+_collector_uploads=asyncio.Semaphore(2)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request,exc):
+    if request.url.path.startswith('/api/collector/v1/'):
+        # Pydantic's default payload may echo a whole image or pasted secret.
+        return JSONResponse({'error':'Invalid collector request fields'},status_code=400)
+    return await request_validation_exception_handler(request,exc)
 app.add_middleware(CORSMiddleware,
                    allow_origins=[origin.strip() for origin in get_settings().allowed_origins.split(",") if origin.strip()],
                    allow_credentials=True, allow_methods=["GET", "POST", "PUT"],
@@ -33,13 +48,42 @@ _last_resolve = 0.0
 
 @app.middleware("http")
 async def request_security(request: Request, call_next):
+    is_collector=request.url.path.startswith('/api/collector/v1/')
+    held=False
+    if is_collector:
+        authorization=request.headers.get('authorization','')
+        import re
+        if not re.fullmatch(r'Bearer [A-Za-z0-9_-]{32,128}',authorization,re.ASCII):
+            return JSONResponse({'error':'Dedicated collector token required'},status_code=401)
+        if request.method=='POST':
+            limit=MAX_BODY if request.url.path.endswith('/frames') else 16384
+            try:length=int(request.headers.get('content-length','0'))
+            except ValueError:return JSONResponse({'error':'Invalid Content-Length'},status_code=400)
+            if length>limit:return JSONResponse({'error':'Request too large'},status_code=413)
+            if request.headers.get('content-type','').split(';')[0]!='application/json':
+                return JSONResponse({'error':'application/json required'},status_code=415)
+            if _collector_uploads.locked():return JSONResponse({'error':'Collector busy; retry later'},status_code=503)
+            await _collector_uploads.acquire();held=True
+            try:
+                body=bytearray()
+                async for chunk in request.stream():
+                    if len(body)+len(chunk)>limit:
+                        _collector_uploads.release();held=False
+                        return JSONResponse({'error':'Request too large'},status_code=413)
+                    body.extend(chunk)
+                request._body=bytes(body)
+            except BaseException:
+                _collector_uploads.release();held=False;raise
     origin = request.headers.get("origin")
     configured = get_settings().public_url
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and origin and configured:
         target = urlsplit(configured)
         if origin != f"{target.scheme}://{target.netloc}":
+            if held:_collector_uploads.release()
             return Response(status_code=403)
-    response = await call_next(request)
+    try:response = await call_next(request)
+    finally:
+        if held:_collector_uploads.release()
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
@@ -77,13 +121,18 @@ def validate_uid(uid):
 
 
 def user_view(user):
-    return {"primary_uid": user.primary_uid, "mode": user.mode}
+    value={"primary_uid": user.preferred_uid or user.primary_uid, "mode": user.mode}
+    if get_settings().collector_enabled:
+        value['id_status']='pending' if value['primary_uid'] and user.primary_uid!=value['primary_uid'] else 'known'
+    return value
 
 
 @app.get("/api/status")
 def status():
     return {"source_available": source.available, "source_message": source.message,
-            "bot_username": get_settings().bot_username, "formula_version": VERSION}
+            "bot_username": get_settings().bot_username, "formula_version": VERSION,
+            "collector_enabled":get_settings().collector_enabled,
+            "manual_import_enabled":get_settings().manual_import_enabled}
 
 
 @app.get("/healthz")
@@ -183,10 +232,15 @@ async def resolve_player(uid, db):
 @app.put("/api/me")
 async def update_me(body: SettingsBody, user=Depends(current_user), db: Session = Depends(get_db)):
     if body.primary_uid is not None:
-        player = await resolve_player(body.primary_uid, db)
-        user.primary_uid = player.uid
-        if source.available:
-            queue_refresh(db, player.uid, body.mode or user.mode)
+        if get_settings().collector_enabled:
+            collector.watch_profile(db,user,body.primary_uid)
+            user.preferred_uid=body.primary_uid
+            user.primary_uid=body.primary_uid if db.get(m.Player,body.primary_uid) else None
+        else:
+            player = await resolve_player(body.primary_uid, db)
+            user.primary_uid = player.uid
+            user.preferred_uid=player.uid
+            if source.available:queue_refresh(db, player.uid, body.mode or user.mode)
     if body.mode is not None:
         user.mode = body.mode
     db.commit()
@@ -195,6 +249,18 @@ async def update_me(body: SettingsBody, user=Depends(current_user), db: Session 
 
 @app.get("/api/players/{uid}")
 async def player_profile(uid: str, mode: Mode = "competitive", scope: Scope = "last20", user=Depends(current_user), db: Session = Depends(get_db)):
+    if get_settings().collector_enabled:
+        collector.watch_profile(db,user,uid,'primary' if uid==(user.preferred_uid or user.primary_uid) else 'lookup')
+        player=db.get(m.Player,uid)
+        state=collector.profile_status(db,uid,mode)
+        if player is None:
+            db.commit()
+            return {'player':{'uid':uid,'nickname':None,'avatar_url':None,'current_mmr':{}},'mode':mode,'scope':scope,
+                    'summary':summarize([]),'matches':[],'updated_at':None,'refresh_state':'pending_night',
+                    'source_error':None,'gaps':[],'history_complete':False,'data_status':'pending','collector_status':state}
+        result=serialize_profile(db,player,mode,scope)
+        result.update(collector_status=state,data_status='available' if result['matches'] else 'pending')
+        db.commit();return result
     player = await resolve_player(uid, db)
     if source.available:
         queue_refresh(db, uid, mode)
@@ -204,6 +270,9 @@ async def player_profile(uid: str, mode: Mode = "competitive", scope: Scope = "l
 
 @app.post("/api/players/{uid}/refresh")
 async def refresh(uid: str, mode: Mode = "competitive", user=Depends(current_user), db: Session = Depends(get_db)):
+    if get_settings().collector_enabled:
+        collector.validate_uid(uid)
+        return {'state':'saved_data','collector_status':collector.profile_status(db,uid,mode)}
     player = await resolve_player(uid, db)
     if not source.available:
         raise HTTPException(503, source.message)
