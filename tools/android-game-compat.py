@@ -331,15 +331,68 @@ def verify_apk(path, *, signature_only=False):
             "manifest_checked": True, "zip_abi_checked": True}, activity.group(1)
 
 
+def route_diagnostics(output, family):
+    """Classify destinations, not occurrences of 'default' in table names.
+
+    ip-route's unreachable/blackhole/prohibit entries discard packets; throw
+    entries abandon that table. A usable route in ANY other table still blocks
+    the offline check. Unknown syntax, family mismatches and truncation also
+    block verification rather than being interpreted as absent connectivity.
+    """
+    limit = 4096
+    encoded = output.encode("utf-8")
+    bounded = encoded[:limit].decode("utf-8", errors="ignore")
+    lines = [line.strip() for line in bounded.splitlines() if line.strip()]
+    truncated = len(encoded) > limit or len(lines) > 128
+    nonusable = {"unreachable", "throw", "prohibit", "blackhole"}
+    types = nonusable | {"unicast", "local", "broadcast", "multicast", "anycast", "nat"}
+    blocking_defaults = nonusable_defaults = unparsed = parsed = 0
+    for line in lines[:128]:
+        tokens = line.split()
+        route_type = tokens[0] if tokens[0] in types else "unicast"
+        destination_index = 1 if tokens[0] in types else 0
+        try:
+            destination = tokens[destination_index]
+            if destination == "default":
+                default = True
+            else:
+                network = ipaddress.ip_network(destination, strict=False)
+                if network.version != family:
+                    raise ValueError()
+                default = network.prefixlen == 0
+        except (IndexError, ValueError):
+            unparsed += 1
+            if any(token in {"default", "0.0.0.0/0", "::/0"} for token in tokens):
+                blocking_defaults += 1
+            continue
+        parsed += 1
+        if default:
+            if route_type in nonusable:
+                nonusable_defaults += 1
+            else:
+                # Omitted/unicast types and less common default route types are
+                # conservatively treated as potentially usable, even linkdown.
+                blocking_defaults += 1
+    return {"classification_complete": not truncated and unparsed == 0,
+            "usable_or_uncertain_default_count": blocking_defaults,
+            "nonusable_default_count": nonusable_defaults,
+            "parsed_route_count": parsed, "unparsed_line_count": unparsed,
+            "output_truncated": truncated, "stdout": bounded}
+
+
 def offline_status():
     airplane = adb("shell", "settings", "get", "global", "airplane_mode_on")
     wifi = adb("shell", "settings", "get", "global", "wifi_on")
     routes = [adb("shell", "ip", family, "route", "show", "table", "all") for family in ("-4", "-6")]
     commands_ok = airplane[0] == wifi[0] == 0 and all(row[0] == 0 for row in routes)
-    default = any(re.search(r"(^|\s)(?:default|0\.0\.0\.0/0|::/0)(?:\s|$)", row[1]) for row in routes)
+    diagnostics = {"ipv" + str(family): {"exit_code": row[0], **route_diagnostics(row[1], family)}
+                   for family, row in zip((4, 6), routes)}
+    default = any(row["usable_or_uncertain_default_count"] for row in diagnostics.values())
+    complete = all(row["classification_complete"] for row in diagnostics.values())
     return {"airplane_mode_enabled": airplane[1].strip() == "1", "wifi_disabled": wifi[1].strip() == "0",
             "route_queries_succeeded": commands_ok, "default_route_present": bool(default),
-            "verified": commands_ok and airplane[1].strip() == "1" and wifi[1].strip() == "0" and not default}
+            "route_classification_complete": complete, "route_diagnostics": diagnostics,
+            "verified": commands_ok and complete and airplane[1].strip() == "1" and wifi[1].strip() == "0" and not default}
 
 
 def disable_android_network():
