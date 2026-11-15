@@ -226,7 +226,7 @@ class StartupNetworkTests(unittest.TestCase):
     def test_online_execute_requires_own_foreground_after_successful_install(self):
         with tempfile.TemporaryDirectory(prefix="startup-execute-test-") as temporary:
             root = Path(temporary).resolve()
-            with patch.dict(os.environ, {"GAME_STARTUP_NETWORK": "online", "ALLOW_OFFLINE_LAUNCH": "true"}), patch.object(
+            with patch.dict(os.environ, {"APK_SOURCE_PROFILE": "apkpure-203982", "GAME_STARTUP_NETWORK": "online", "ALLOW_OFFLINE_LAUNCH": "true"}), patch.object(
                     probe, "guard", return_value=root), patch.object(probe, "host_report", return_value={}), patch.object(
                     probe, "emulator_package_version", return_value="test"), patch.object(
                     probe, "download_apk", return_value={"actual_sha256": "unit-test-fixture"}), patch.object(
