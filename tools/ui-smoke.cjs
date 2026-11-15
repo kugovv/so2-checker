@@ -36,6 +36,7 @@ const color = n => { const d = Number(rounded(n)); return d < .9 ? 'red' : d <= 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function profile(uid, mode = 'competitive', scope = 'last20', empty = false) {
+  const modeVersion = mode === 'allies' ? 'so2-allies-v3-preliminary' : VERSION;
   const count = empty ? 0 : uid === SECOND ? 5 : 20;
   // 13/20 (65%) are above 1.00; arithmetic mean is 1.104 -> white 1.10.
   const values = [.894, .895, 1.104, 1.105, 1.804, 1.805, ...Array(5).fill(.99), ...Array(9).fill(9.523 / 9)];
@@ -48,7 +49,7 @@ function profile(uid, mode = 'competitive', scope = 'last20', empty = false) {
       score: i % 2 ? [8, 10] : [10, 8], result: i % 2 ? 'loss' : 'win',
       kills, deaths: 10 + i % 3, assists: i % 5, headshots: Math.floor(kills * .45), rounds: 18,
       rating, rating_display: rounded(rating), rating_color: color(rating), tier: 'rounds',
-      formula_version: VERSION, mmr_before: 1200 - i * 2, mmr_after: 1202 - i * 2 };
+      formula_version: modeVersion, mmr_before: 1200 - i * 2, mmr_after: 1202 - i * 2 };
   });
   const latest = matches.slice(0, count);
   const sum = key => latest.reduce((total, m) => total + m[key], 0);
@@ -61,7 +62,7 @@ function profile(uid, mode = 'competitive', scope = 'last20', empty = false) {
     above_100: count ? latest.filter(m => m.rating > 1).length / count * 100 : null,
     above_110: count ? latest.filter(m => m.rating > 1.1).length / count * 100 : null,
     median: count ? 1.058 : null, stddev: count ? .24 : null, tier: count ? 'rounds' : null,
-    formula_version: VERSION, formula_versions: count ? [VERSION] : [],
+    formula_version: modeVersion, formula_versions: count ? [modeVersion] : [],
   };
   return { player: { uid, nickname: uid === SECOND ? 'ТЕСТ · Игрок с длинным именем' : 'ТЕСТ · Север',
       avatar_url: null, current_mmr: { competitive: 1202, allies: 950 } }, mode, scope, summary, matches,
@@ -315,6 +316,8 @@ async function runWidth(browser, width) {
 
     await page.getByRole('button', { name: /Напарники/ }).click();
     await expect(page.getByRole('button', { name: /Напарники/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.rating-unit b')).toHaveText('V3');
+    results.push({ width, check: 'allies_v3_method_label', passed: true });
     await nav('Матчи').click();
     await expect(page.locator('.match-card')).toHaveCount(20);
     assert.equal(state.me.mode, 'allies');

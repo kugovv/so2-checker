@@ -3,10 +3,10 @@ from decimal import Decimal, ROUND_HALF_UP, localcontext
 from statistics import median, pstdev
 
 VERSION = "so2-comp-v2-preliminary"
-ALLIES_VERSION = "so2-allies-v2-preliminary"
+ALLIES_VERSION = "so2-allies-v3-preliminary"
 # Conservative low-evidence prior, not real kills/deaths. One combined
 # duel ratio prevents adding a second bonus for the same kills through KPR.
-ALLIES_PARAMETERS = {"kill_prior": "1", "death_prior": "2", "assist_credit": "0.35", "exponent": "0.60"}
+ALLIES_PARAMETERS = {"kill_prior": "1", "death_prior": "2", "assist_credit": "0.35", "weak_exponent": "1.00", "exponent": "0.60"}
 
 
 def formula_version(mode):
@@ -86,13 +86,14 @@ def calculate(mode, kills, deaths, assists, rounds=None):
             numerator = dec(kills) + p['assist_credit'] * dec(assists) + p['kill_prior']
             denominator = dec(deaths) + p['death_prior']
             ratio = numerator / denominator
-            value = ratio ** p['exponent']
+            exponent = p['weak_exponent'] if ratio <= 1 else p['exponent']
+            value = ratio ** exponent
             return {"value": value.quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP),
                     "tier": "duels", "inputs": inputs,
                     "parameters": {**ALLIES_PARAMETERS, "mode": mode, "model": "smoothed_duel_ratio",
                                    "opponent_adjustment": False, "rounds_used": False},
                     "factors": {"duel_numerator": float(numerator), "duel_denominator": float(denominator),
-                                "duel_ratio": float(ratio), "exponent": float(p['exponent'])}}
+                                "duel_ratio": float(ratio), "exponent": float(exponent)}}
     tier = "rounds" if isinstance(rounds, int) and not isinstance(rounds, bool) and rounds > 0 else "match"
     norms = PARAMETERS[mode][tier]
     divisor = dec(rounds) if tier == "rounds" else Decimal(1)

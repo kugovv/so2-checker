@@ -212,7 +212,7 @@ def _snapshot(*, source, snapshot_id, mode, rows, selected, match_id, map_name, 
             "rating_color": rating_color(result["value"]), "formula_version": _version(mode),
             "rating_tier": result["tier"], "personal_rounds": personal_rounds,
             "match_rounds": match_round_count(score), "rounds_basis": result['parameters'].get('rounds_basis'),
-            "method_note": "Дуэльная оценка 2×2 · v2" if mode == "allies" else "По подтверждённым личным раундам" if personal_rounds else "По раундам матча · полное участие предполагается" if result['tier'] == 'match_rounds' else METHOD_NOTE,
+            "method_note": "Дуэльная оценка 2×2 · v3" if mode == "allies" else "По подтверждённым личным раундам" if personal_rounds else "По раундам матча · полное участие предполагается" if result['tier'] == 'match_rounds' else METHOD_NOTE,
             "rating_inputs": result["inputs"], "rating_parameters": result["parameters"],
             "rating_factors": result["factors"],
             "players": _rated_players(rows, mode, selected, source, personal_rounds, score),
@@ -245,7 +245,9 @@ def _rating_sql(model, mode):
         p = {key: Decimal(value) for key, value in ALLIES_PARAMETERS.items()}
         numerator = cast(model.kills, Numeric(28, 12)) + p['assist_credit'] * cast(model.assists, Numeric(28, 12)) + p['kill_prior']
         denominator = cast(model.deaths, Numeric(28, 12)) + p['death_prior']
-        return func.round(cast(func.power(numerator / denominator, p['exponent']), Numeric(28, 12)), 8)
+        ratio = numerator / denominator
+        exponent = case((ratio <= 1, p['weak_exponent']), else_=p['exponent'])
+        return func.round(cast(func.power(ratio, exponent), Numeric(28, 12)), 8)
     norms = PARAMETERS[mode]["match"]
     rounds = _rounds_sql(model)
     value = literal(Decimal("1"), type_=Numeric(28, 12))

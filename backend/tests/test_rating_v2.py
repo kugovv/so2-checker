@@ -13,8 +13,8 @@ from tests.test_screenshot_bot import harness, FakeMessage, click
 
 
 @pytest.mark.parametrize('kills,deaths,assists,expected', [
-    (0,0,0,'0.66'),(1,0,0,'1.00'),(1,10,2,'0.41'),(4,5,2,'0.88'),
-    (8,8,2,'0.98'),(10,5,0,'1.31'),(13,3,0,'1.85'),(15,5,0,'1.64'),(18,3,0,'2.23')])
+    (0,0,0,'0.50'),(1,0,0,'1.00'),(1,10,2,'0.23'),(3,11,1,'0.33'),(4,5,2,'0.81'),
+    (8,8,2,'0.97'),(10,5,0,'1.31'),(13,3,0,'1.85'),(15,5,0,'1.64'),(18,3,0,'2.23')])
 def test_allies_scale(kills,deaths,assists,expected):
     result = calculate('allies',kills,deaths,assists)
     assert displayed(result['value']) == expected
