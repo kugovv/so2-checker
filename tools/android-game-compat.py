@@ -716,6 +716,7 @@ def initial_report():
             "authenticity_gate": {"method": "apksigner_verified_publisher_certificate_sha256",
                                   "expected_certificate_sha256": PUBLISHER_SHA256, "verified": False},
             "game_installed": False, "game_authenticated": None if mode == "online" else False,
+            "runtime_permissions_granted_at_install": False,
             "game_authentication_verified": False, "data_source_ready": False,
             "account_login_attempted": False, "guest_authentication_requested": None if mode == "online" else False,
             "apk_persisted_as_artifact": False, "android_state_persisted": False,
@@ -724,6 +725,7 @@ def initial_report():
                       "Online mode permits normal initial startup without account input or login interaction; automatic guest/network behavior is unverified.",
                       "Published SHA1 metadata is not a substitute for the mandatory publisher APK signature verification.",
                       "Log categories are observed markers and do not by themselves establish the cause of process exit.",
+                      "Declared runtime permissions are granted only at APK installation on this empty ephemeral test VM; emulator audio is disabled and no user files or accounts are provided.",
                       "Only bounded observations are published; no APK, raw logs, XML or account data."]}
 
 
@@ -795,10 +797,11 @@ def execute(phase):
                     report["network_before_install"] = prepare_startup_network(mode)
                     if mode == "offline" and not report["network_before_install"]["verified"]:
                         raise CompatError("offline_network_not_verified")
-                    code, output, errors = adb("install", "--no-streaming", str(apk), timeout=180)
+                    code, output, errors = adb("install", "-g", "--no-streaming", str(apk), timeout=180)
                     if code != 0 or "Success" not in output:
                         raise CompatError("apk_install_failed", command_failure_detail("adb-install", code, output, errors))
                     report["game_installed"] = True
+                    report["runtime_permissions_granted_at_install"] = True
                     if bundle is not None:
                         obb = bundle.metadata["files"][OBB_MEMBER]
                         report["obb_transfer"] = push_verified_obb(bundle.obb_path, obb["bytes"], obb["sha256"])

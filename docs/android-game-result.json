@@ -1,28 +1,62 @@
 {
-  "run_url": "https://github.com/kugovv/so2-checker/actions/runs/43719718695",
-  "commit": "0ec572d92f18734d83a856d1270e26bf1fcb0b5f",
-  "screen_observation": "Android full-screen help overlay over black game window; actual game menu not verified",
-  "updated_utc": "2026-11-15T13:37:36.489485+00:00",
+  "run_url": "https://github.com/kugovv/so2-checker/actions/runs/43720825313",
+  "commit": "6071c433fc8cdd88855f5989d4ceda6f4e90b442",
+  "screen_observation": "Early game image black; Android permission controller in foreground at 30s and 90s; game menu unverified",
+  "updated_utc": "2026-11-15T13:52:17.065535+00:00",
+  "source_profile": "apkpure-xapk-203982",
+  "source_format": "xapk",
   "startup_network": "online",
-  "actual_sha256": "d563f9646f6c4dee94e905026cc6608fd01716f9767eac4dbf38a0b2ffd65bff",
+  "actual_sha256": "2c587b32be2e9b391902bf167526f07c177c72b4536839a9c38348815926078a",
+  "actual_apk_sha256": "d563f9646f6c4dee94e905026cc6608fd01716f9767eac4dbf38a0b2ffd65bff",
+  "bundle_extraction": {
+    "format": "xapk_v2",
+    "extracted_bytes": 2102951484,
+    "files": {
+      "com.axlebolt.standoff2.apk": {
+        "bytes": 103739086,
+        "sha256": "d563f9646f6c4dee94e905026cc6608fd01716f9767eac4dbf38a0b2ffd65bff"
+      },
+      "Android/obb/com.axlebolt.standoff2/main.203982.com.axlebolt.standoff2.obb": {
+        "bytes": 1999210252,
+        "sha256": "50c9a2375f97ccc2c6c0d94f483b59cb85935ea32c3b161d6ceefeaf190ed9eb"
+      },
+      "manifest.json": {
+        "bytes": 2146,
+        "sha256": "86af13446556f7407d599e8a580ca05e63c03508aa746e8584d7a3ad6c681179"
+      }
+    }
+  },
   "authenticity_gate": {
     "method": "apksigner_verified_publisher_certificate_sha256",
     "expected_certificate_sha256": "cd2902a2cf385491759513a10174cc7198f8e08b6db7756e1f8ae2e3a1b2063d",
     "verified": true
+  },
+  "obb_push_verified": true,
+  "obb_transfer": {
+    "bytes": 1999210252,
+    "host_sha256": "50c9a2375f97ccc2c6c0d94f483b59cb85935ea32c3b161d6ceefeaf190ed9eb",
+    "device_sha256": "50c9a2375f97ccc2c6c0d94f483b59cb85935ea32c3b161d6ceefeaf190ed9eb",
+    "size_verified": true,
+    "sha256_verified": true
   },
   "game_installed": true,
   "launch_attempted": true,
   "launch": {
     "attempted": true,
     "process_alive_after_30s": true,
-    "app_foreground": true,
+    "app_foreground": false,
     "startup_network": "online",
     "offline_after_launch": null,
-    "screenshot_saved": true,
-    "foreground_package": "com.axlebolt.standoff2",
+    "screenshot_saved": false,
+    "foreground_package": "com.google.android.permissioncontroller",
+    "immersive_confirmation": {
+      "write_succeeded": true,
+      "read_succeeded": true,
+      "confirmed": true
+    },
     "process_alive_after_2s": true,
     "early_foreground_package": "com.axlebolt.standoff2",
-    "early_screenshot_saved": false,
+    "early_screenshot_saved": true,
     "latest_exit_info": {
       "query_succeeded": true,
       "parsed": false,
@@ -51,11 +85,18 @@
     },
     "filtered_logcat_inspected": true
   },
+  "settled_after_90s": {
+    "process_alive": true,
+    "foreground_package": "com.google.android.permissioncontroller",
+    "app_foreground": false,
+    "screenshot_saved": false,
+    "offline_status": null
+  },
   "game_authenticated": null,
   "game_authentication_verified": false,
   "account_login_attempted": false,
   "guest_authentication_requested": null,
   "data_source_ready": false,
-  "failure_category": null,
+  "failure_category": "game_not_foreground",
   "failure_detail": null
 }

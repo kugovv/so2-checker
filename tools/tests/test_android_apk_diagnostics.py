@@ -283,7 +283,11 @@ class XapkStartupOrderingTests(unittest.TestCase):
                 if args[:2] == ("shell", "getprop"):
                     return 0, "1\n", ""
                 if args[0] == "install":
+                    self.assertEqual(args[:3], ("install", "-g", "--no-streaming"))
+                    self.assertEqual(kwargs.get("timeout"), 180)
                     events.append("install")
+                    if failure == "install":
+                        return 1, "", "INSTALL_FAILED_TEST_FIXTURE"
                     return 0, "Success\n", ""
                 if args[:2] == ("shell", "mkdir"):
                     self.assertEqual(args[-1], probe.DEVICE_OBB_DIRECTORY)
@@ -327,6 +331,7 @@ class XapkStartupOrderingTests(unittest.TestCase):
         self.assertEqual(events, ["download-hash", "extract", "publisher-signature-manifest-abi", "install",
                                   "own-obb-directory", "obb-push", "device-size", "device-sha256", "launch", "settled-90s"])
         self.assertTrue(report["obb_push_verified"])
+        self.assertTrue(report["runtime_permissions_granted_at_install"])
         self.assertEqual(report["source_format"], "xapk")
         self.assertEqual(report["expected_source_bytes"], 2102952039)
         self.assertEqual(report["expected_apk_bytes"], 103739086)
@@ -340,6 +345,7 @@ class XapkStartupOrderingTests(unittest.TestCase):
         self.assertEqual(report["failure_category"], "xapk_outer_integrity_unverified")
         self.assertEqual(events, ["download-hash"])
         self.assertFalse(report["game_installed"])
+        self.assertFalse(report["runtime_permissions_granted_at_install"])
 
     def test_failed_publisher_signature_prevents_install_obb_push_and_launch(self):
         status, report, events = self.run_fixture("signature")
@@ -349,6 +355,16 @@ class XapkStartupOrderingTests(unittest.TestCase):
         self.assertNotIn("obb-push", events)
         self.assertNotIn("launch", events)
         self.assertFalse(report["authenticity_gate"]["verified"])
+        self.assertFalse(report["runtime_permissions_granted_at_install"])
+
+    def test_failed_install_never_claims_runtime_permissions_granted(self):
+        status, report, events = self.run_fixture("install")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_category"], "apk_install_failed")
+        self.assertFalse(report["game_installed"])
+        self.assertFalse(report["runtime_permissions_granted_at_install"])
+        self.assertNotIn("obb-push", events)
+        self.assertNotIn("launch", events)
 
     def test_device_obb_checksum_mismatch_prevents_launch(self):
         status, report, events = self.run_fixture("checksum")
