@@ -499,7 +499,7 @@ class ScreenshotController:
                 keyboard = []
             keyboard.append([InlineKeyboardButton(text="Как рассчитано", callback_data=f"shot-formula:{mode}")])
             if self.public_url:
-                keyboard.append([InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=self.public_url))])
+                keyboard.append([InlineKeyboardButton(text="Check", web_app=WebAppInfo(url=self.public_url))])
             await self.answer(message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
     async def formula(self, query):

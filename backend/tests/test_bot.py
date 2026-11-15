@@ -74,9 +74,10 @@ def test_start_replies_with_mini_app_button_without_chat_stats(monkeypatch):
     private, group = calls["answers"]
     assert private[0] == "private" and len(private[1]) < 300
     button = private[2]["reply_markup"].inline_keyboard[0][0]
-    assert button.text == "Открыть приложение"
+    assert button.text == "Check"
     assert button.web_app.url == "https://frontend.example.test/app/"
     assert calls["menu"].web_app.url == button.web_app.url
+    assert calls['menu'].text == 'Check'
     assert calls["commands"][0].command == "start"
     assert any(command.command == "match" for command in calls["commands"])
     assert calls["screenshot_router"].name == "screenshot-ratings"
