@@ -1,6 +1,7 @@
 import threading
 import time
-from collections import defaultdict
+from bisect import insort
+from itertools import groupby
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import func, select
@@ -13,7 +14,7 @@ _cache_lock = threading.Lock()
 
 
 def get_leaderboard(db, mode):
-    """Three bounded SQL queries and a 30-second cache, instead of 10k N+1 profile reads."""
+    """Stream compact rows, retain <=20 per player and <=100 per table; cache for 30s."""
     engine = db.get_bind()
     with _cache_lock:
         cached = _cache.get(engine, {}).get(mode)
@@ -26,23 +27,34 @@ def get_leaderboard(db, mode):
     ).label("position")).join(m.Match, m.Participant.match_id == m.Match.id).where(
         m.Participant.player_uid.in_(followed), m.Participant.mode == mode, m.Match.completed.is_(True)
     ).subquery()
-    groups = defaultdict(list)
-    for row in db.scalars(select(m.Participant).join(ranked, m.Participant.id == ranked.c.id).where(ranked.c.position <= 20)):
-        groups[row.player_uid].append(row)
+    # Select only scalar inputs used by summarize: raw JSON, factors and ORM objects stay in the DB.
+    query = select(
+        m.Participant.player_uid, m.Participant.rating, m.Participant.kills, m.Participant.deaths,
+        m.Participant.assists, m.Participant.headshots, m.Participant.rating_tier, m.Participant.formula_version,
+    ).join(ranked, m.Participant.id == ranked.c.id).where(ranked.c.position <= 20).order_by(
+        m.Participant.player_uid
+    ).execution_options(yield_per=1000)
     players, provisional = [], []
-    if groups:
-        for player in db.scalars(select(m.Player).where(m.Player.uid.in_(groups))):
-            summary = summarize(groups[player.uid])
+    with db.execute(query) as rows:
+        for uid, group in groupby(rows, key=lambda row: row.player_uid):
+            summary = summarize(list(group))
             if summary["rating"] is None:
                 continue
-            item = {"uid": player.uid, "nickname": player.nickname, **summary}
+            item = {"uid": uid, **summary}
             if summary["count"] == 20 and summary["rated_count"] == 20 and summary["tier"] == "rounds":
-                players.append(item)
+                insort(players, item, key=lambda p: (-p["rating"], p["uid"]))
+                del players[100:]
             else:
-                provisional.append(item)
-    players.sort(key=lambda p: (-p["rating"], p["uid"]))
-    provisional.sort(key=lambda p: (p["tier"] or "", -p["rating"], p["uid"]))
-    result = {"players": players[:100], "provisional": provisional[:100],
+                insort(provisional, item, key=lambda p: (p["tier"] or "", -p["rating"], p["uid"]))
+                del provisional[100:]
+    finalists = players + provisional
+    if finalists:
+        names = dict(db.execute(select(m.Player.uid, m.Player.nickname).where(
+            m.Player.uid.in_([item["uid"] for item in finalists])
+        )).all())
+        for item in finalists:
+            item["nickname"] = names[item["uid"]]
+    result = {"players": players, "provisional": provisional,
               "scope": "Среди отслеживаемых игроков", "formula_version": VERSION, "cache_seconds": 30}
     with _cache_lock:
         _cache.setdefault(engine, {})[mode] = (time.monotonic(), result)

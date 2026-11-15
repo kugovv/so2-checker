@@ -1,0 +1,7 @@
+{
+  "name": "so2-checker-development-tools",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}

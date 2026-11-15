@@ -28,6 +28,8 @@ python -m venv .venv
 
 В Windows Python виртуального окружения находится в `.venv/Scripts/python.exe`. Тестовые данные из `backend/tests/` используются только тестами, production их не импортирует. Проверка браузером с тестовыми ответами также не подтверждает реальную интеграцию.
 
+Браузерные проверки на 360/390/430/1280 px находятся в `tools/ui-smoke.cjs`. Установить `npm ci --prefix tools`, затем браузеры: `node tools/node_modules/playwright/cli.js install chromium webkit` с переменной `PLAYWRIGHT_BROWSERS_PATH`, указывающей на абсолютный путь `.pw-browsers` в корне проекта. Запустить frontend через `npm run dev` и в другом терминале `node tools/ui-smoke.cjs`. Для WebKit задать `PW_ENGINE=webkit`. Скрипт допускает только localhost, подменяет ответы лишь внутри тестового браузера и сохраняет скриншоты/отчёт в `artifacts/ui/`. Эти фикстуры не подключаются к опубликованному приложению. Chromium-проверки также запускаются в GitHub Actions.
+
 ## GitHub Pages
 
 В настройках репозитория Pages → Source выбирается GitHub Actions. Workflow `pages.yml` собирает `frontend/dist` и публикует HTTPS-страницу. `base: './'` позволяет открыть приложение в подпапке проекта. В Repository variables `VITE_API_URL` задаётся публичный HTTPS-адрес отдельно запущенного backend **без** `/api` в конце. Если переменная отсутствует, приложение сообщает о ненастроенном backend и не использует фиктивный API.
