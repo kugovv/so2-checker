@@ -269,18 +269,37 @@ def sdk_root():
 
 def build_tool(name):
     root = sdk_root() / "build-tools"
-    candidates = sorted((directory / name for directory in root.iterdir() if (directory / name).is_file()),
-                        key=lambda path: tuple(int(x) for x in re.findall(r"\d+", path.parent.name)), reverse=True)
+    try:
+        candidates = sorted((directory / name for directory in root.iterdir() if (directory / name).is_file()),
+                            key=lambda path: tuple(int(x) for x in re.findall(r"\d+", path.parent.name)), reverse=True)
+    except OSError:
+        candidates = []
     if not candidates:
-        raise CompatError("android_build_tool_missing")
+        raise CompatError("android_build_tool_missing", {"tool": name, "build_tools_available": False})
     return str(candidates[0])
 
 
-def verify_apk(path):
-    code, output, _ = command([build_tool("apksigner"), "verify", "--verbose", "--print-certs", str(path)], timeout=60)
-    certificates = set(value.lower() for value in re.findall(r"Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]{64})", output))
-    if code != 0 or certificates != {PUBLISHER_SHA256}:
-        raise CompatError("publisher_signature_mismatch")
+def verify_apk(path, *, signature_only=False):
+    executable = build_tool("apksigner")
+    code, output, errors = command([executable, "verify", "--verbose", "--print-certs", str(path)], timeout=60)
+    matches = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]{64})", output)
+    certificates = {value.lower() for value in matches}
+    tool_path = Path(executable)
+    diagnostic = {"tool": tool_path.name, "build_tools_version": tool_path.parent.name,
+                  "tool_relative_path": "build-tools/" + tool_path.parent.name + "/" + tool_path.name,
+                  "tool_executable": os.access(executable, os.X_OK), "exit_code": code,
+                  "observed_signer_sha256": sorted(certificates), "signer_digest_matches": len(matches),
+                  "verification_stdout": output.encode("utf-8")[:4096].decode("utf-8", errors="ignore"),
+                  "verification_stderr": errors.encode("utf-8")[:4096].decode("utf-8", errors="ignore")}
+    if code is None or code != 0:
+        raise CompatError("apk_verifier_failed", diagnostic)
+    if not certificates:
+        raise CompatError("apk_verifier_output_unrecognized", diagnostic)
+    if certificates != {PUBLISHER_SHA256}:
+        raise CompatError("publisher_signature_mismatch", diagnostic)
+    if signature_only:
+        return {"publisher_certificate_sha256": PUBLISHER_SHA256, "signature_diagnostics": diagnostic,
+                "manifest_checked": False, "zip_abi_checked": False}, None
     code, output, _ = command([build_tool("aapt"), "dump", "badging", str(path)], timeout=30)
     package = re.search(r"^package: name='([^']+)' versionCode='([^']+)'", output, re.M)
     activity = re.search(r"^launchable-activity: name='([^']+)'", output, re.M)
@@ -300,7 +319,8 @@ def verify_apk(path):
     if "arm64-v8a" not in abis or abis != zip_abis:
         raise CompatError("apk_abi_mismatch")
     return {"package": PACKAGE, "version_code": BUILD, "abis": sorted(abis),
-            "publisher_certificate_sha256": PUBLISHER_SHA256}, activity.group(1)
+            "publisher_certificate_sha256": PUBLISHER_SHA256, "signature_diagnostics": diagnostic,
+            "manifest_checked": True, "zip_abi_checked": True}, activity.group(1)
 
 
 def offline_status():
@@ -387,6 +407,7 @@ def initial_report():
     profile_name, profile = source_profile()
     return {"schema_version": 1, "purpose": "signed_game_apk_offline_compatibility",
             "source_profile": profile_name, "expected_apk_bytes": profile["bytes"],
+            "verification_only": os.environ.get("APK_VERIFY_ONLY") == "true",
             "expected_metadata_hash": profile["metadata_hash"].copy(), "actual_sha256": None,
             "expected_version_code": BUILD,
             "authenticity_gate": {"method": "apksigner_verified_publisher_certificate_sha256",
@@ -422,16 +443,21 @@ def execute(phase):
     try:
         if phase == "before":
             report["host_before"] = host = host_report(root)
-            report["capacity_checks"] = {"kvm_present": host["kvm_present"], "disk_12gib_free": host["disk_bytes"]["free"] >= 12 * GIB,
-                                         "memory_6gib_available": host["memory_mib"].get("available", 0) >= 6144}
+            if report["verification_only"]:
+                report["capacity_checks"] = {"disk_1gib_free": host["disk_bytes"]["free"] >= GIB}
+            else:
+                report["capacity_checks"] = {"kvm_present": host["kvm_present"], "disk_12gib_free": host["disk_bytes"]["free"] >= 12 * GIB,
+                                             "memory_6gib_available": host["memory_mib"].get("available", 0) >= 6144}
             if not all(report["capacity_checks"].values()):
                 raise CompatError("runner_capacity_insufficient")
-        elif phase == "game":
+        elif phase in {"game", "verify"}:
             directory.mkdir(parents=True, exist_ok=True)
-            report["host_during"] = host_report(root)
-            report["emulator_package_version"] = emulator_package_version()
-            if adb("shell", "getprop", "sys.boot_completed")[1].strip() != "1":
-                raise CompatError("android_not_booted")
+            report["host_verification" if phase == "verify" else "host_during"] = host_report(root)
+            report["verification_only"] = phase == "verify"
+            if phase == "game":
+                report["emulator_package_version"] = emulator_package_version()
+                if adb("shell", "getprop", "sys.boot_completed")[1].strip() != "1":
+                    raise CompatError("android_not_booted")
             with tempfile.TemporaryDirectory(prefix=".android-game-apk-", dir=root) as temporary:
                 # Temporary APK and its cleanup stay within the checked workspace.
                 if not Path(temporary).resolve().is_relative_to(root):
@@ -439,26 +465,29 @@ def execute(phase):
                 apk = Path(temporary) / "game.apk"
                 report["download"] = download_apk(os.environ.get("APK_SOURCE_URL", ""), apk)
                 report["actual_sha256"] = report["download"]["actual_sha256"]
-                report["verified_apk"], activity = verify_apk(apk)
+                report["verified_apk"], activity = verify_apk(apk, signature_only=phase == "verify")
                 report["authenticity_gate"]["verified"] = True
-                report["network_before_install"] = disable_android_network()
-                if not report["network_before_install"]["verified"]:
-                    raise CompatError("offline_network_not_verified")
-                code, output, _ = adb("install", "--no-streaming", str(apk), timeout=180)
-                if code != 0 or "Success" not in output:
-                    raise CompatError("apk_install_failed")
-                report["game_installed"] = True
-                if os.environ.get("ALLOW_OFFLINE_LAUNCH") == "true":
-                    report["launch_attempted"] = True
-                    report["launch"] = launch_offline(activity, directory)
-                    if not report["launch"]["offline_after_launch"]["verified"]:
-                        raise CompatError("offline_not_verified_after_launch")
-                    if not report["launch"]["process_alive_after_30s"]:
-                        raise CompatError("game_process_exited")
+                if phase == "game":
+                    report["network_before_install"] = disable_android_network()
+                    if not report["network_before_install"]["verified"]:
+                        raise CompatError("offline_network_not_verified")
+                    code, output, _ = adb("install", "--no-streaming", str(apk), timeout=180)
+                    if code != 0 or "Success" not in output:
+                        raise CompatError("apk_install_failed")
+                    report["game_installed"] = True
+                    if os.environ.get("ALLOW_OFFLINE_LAUNCH") == "true":
+                        report["launch_attempted"] = True
+                        report["launch"] = launch_offline(activity, directory)
+                        if not report["launch"]["offline_after_launch"]["verified"]:
+                            raise CompatError("offline_not_verified_after_launch")
+                        if not report["launch"]["process_alive_after_30s"]:
+                            raise CompatError("game_process_exited")
         elif phase == "after":
             report["host_after"] = host_report(root)
             outcome = os.environ.get("COMPAT_EMULATOR_OUTCOME", "unknown")
             report["emulator_step_outcome"] = outcome if outcome in {"success", "failure", "cancelled", "skipped"} else "unknown"
+            verifier_outcome = os.environ.get("COMPAT_VERIFY_OUTCOME", "unknown")
+            report["signature_step_outcome"] = verifier_outcome if verifier_outcome in {"success", "failure", "cancelled", "skipped"} else "unknown"
             if "host_before" in report:
                 report["disk_used_delta_bytes"] = report["host_after"]["disk_bytes"]["used"] - report["host_before"]["disk_bytes"]["used"]
     except CompatError as error:
@@ -474,5 +503,5 @@ def execute(phase):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("before", "game", "after"), required=True)
+    parser.add_argument("--phase", choices=("before", "verify", "game", "after"), required=True)
     raise SystemExit(execute(parser.parse_args().phase))

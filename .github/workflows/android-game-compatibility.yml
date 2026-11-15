@@ -20,6 +20,11 @@ on:
         required: true
         type: boolean
         default: true
+      verify_only:
+        description: Download and diagnose the publisher APK signature on the host; skip Android
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,6 +40,7 @@ jobs:
     timeout-minutes: 25
     env:
       APK_SOURCE_PROFILE: ${{ inputs.source_profile }}
+      APK_VERIFY_ONLY: ${{ inputs.verify_only }}
     steps:
       - name: Check out source without persisting credentials
         id: checkout
@@ -43,7 +49,14 @@ jobs:
           persist-credentials: false
       - name: Verify ephemeral runner and record capacity
         run: python3 tools/android-game-compat.py --phase before
+      - name: Diagnose APK signature on the host without booting Android
+        id: verifier
+        if: ${{ inputs.verify_only }}
+        env:
+          APK_SOURCE_URL: ${{ inputs.apk_url }}
+        run: python3 tools/android-game-compat.py --phase verify
       - name: Enable KVM only on the ephemeral GitHub runner
+        if: ${{ !inputs.verify_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -57,6 +70,7 @@ jobs:
           [[ -r /dev/kvm && -w /dev/kvm ]]
       - name: Verify signed APK and test its native launch offline
         id: emulator
+        if: ${{ !inputs.verify_only }}
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         env:
           APK_SOURCE_URL: ${{ inputs.apk_url }}
@@ -82,6 +96,7 @@ jobs:
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         env:
           COMPAT_EMULATOR_OUTCOME: ${{ steps.emulator.outcome }}
+          COMPAT_VERIFY_OUTCOME: ${{ steps.verifier.outcome }}
         run: python3 tools/android-game-compat.py --phase after
       - name: Keep the bounded report and optional offline game screen for one day
         if: ${{ always() && steps.checkout.outcome == 'success' }}
