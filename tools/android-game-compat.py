@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """One ephemeral signed-APK/offline-launch test; never enters an account.
 
-Only the fixed APK SHA/build and publisher signing certificate are accepted.
+Only fixed per-source file metadata/build and the publisher signing certificate
+are accepted. APKPure's published SHA1 is a metadata check, never a substitute
+for cryptographic APK signature verification against the publisher SHA256.
 No APK, AVD, logcat, XML, account data, or source URL is published as an artifact.
 """
 from __future__ import annotations
@@ -28,8 +30,12 @@ import zipfile
 
 PACKAGE = "com.axlebolt.standoff2"
 BUILD = "203982"
-APK_BYTES = 103734905
-APK_SHA256 = "f492fe4c5ea0d5aa084ee0376a394625c7248cc96df70cbc966588337d21932a"
+SOURCE_PROFILES = {
+    "apkmirror-203982": {"bytes": 103734905, "metadata_hash": {
+        "algorithm": "sha256", "value": "f492fe4c5ea0d5aa084ee0376a394625c7248cc96df70cbc966588337d21932a"}},
+    "apkpure-203982": {"bytes": 103739086, "metadata_hash": {
+        "algorithm": "sha1", "value": "67dc7c1619d32d18ea494b832091cb23b20f0c9c"}},
+}
 PUBLISHER_SHA256 = "cd2902a2cf385491759513a10174cc7198f8e08b6db7756e1f8ae2e3a1b2063d"
 MAX_DOWNLOAD = 160 * 1024 * 1024
 DOWNLOAD_SECONDS = 180
@@ -39,9 +45,17 @@ GIB = 1024 ** 3
 
 
 class CompatError(Exception):
-    def __init__(self, category):
+    def __init__(self, category, detail=None):
         self.category = category
+        self.detail = detail
         super().__init__(category)
+
+
+def source_profile():
+    name = os.environ.get("APK_SOURCE_PROFILE", "apkmirror-203982")
+    if name not in SOURCE_PROFILES:
+        raise CompatError("unknown_source_profile")
+    return name, SOURCE_PROFILES[name]
 
 
 def guard() -> Path:
@@ -172,6 +186,7 @@ def visible_download_url(html, current_url):
 
 
 def download_apk(url, destination):
+    profile_name, profile = source_profile()
     deadline = time.monotonic() + DOWNLOAD_SECONDS
     redirects = pages = 0
     while True:
@@ -201,6 +216,7 @@ def download_apk(url, destination):
             if length and (not length.isdigit() or int(length) > limit):
                 raise CompatError("download_size_limit")
             total, chunks, digest = 0, [], hashlib.sha256()
+            metadata_digest = hashlib.new(profile["metadata_hash"]["algorithm"])
             with destination.open("wb") as stream:
                 while True:
                     remaining = deadline - time.monotonic()
@@ -218,18 +234,26 @@ def download_apk(url, destination):
                     else:
                         stream.write(chunk)
                         digest.update(chunk)
+                        metadata_digest.update(chunk)
             if html:
                 pages += 1
                 if pages > 2:
                     raise CompatError("download_html_page_limit")
                 url = visible_download_url(b"".join(chunks).decode("utf-8", errors="replace"), url)
                 continue
-            if total != APK_BYTES or digest.hexdigest() != APK_SHA256:
+            if total != profile["bytes"] or metadata_digest.hexdigest() != profile["metadata_hash"]["value"]:
                 raise CompatError("apk_hash_or_size_mismatch")
-            return {"bytes": total, "sha256": digest.hexdigest(), "redirects": redirects,
+            return {"source_profile": profile_name, "bytes": total, "actual_sha256": digest.hexdigest(),
+                    "metadata_hash_verified": True, "redirects": redirects,
                     "visible_html_pages": pages, "source_host": hostname}
+        except CompatError as error:
+            if error.detail is None:
+                error.detail = {"source_host": hostname[:253], "redirects": redirects,
+                                "html_pages": pages, "http_status": response.status if response is not None else None}
+            raise
         except (OSError, http.client.HTTPException):
-            raise CompatError("download_transport_error") from None
+            raise CompatError("download_transport_error", {"source_host": hostname[:253], "redirects": redirects,
+                              "html_pages": pages, "http_status": response.status if response is not None else None}) from None
         finally:
             if response is not None:
                 response.close()
@@ -360,13 +384,19 @@ def launch_offline(activity, output_directory):
 
 
 def initial_report():
+    profile_name, profile = source_profile()
     return {"schema_version": 1, "purpose": "signed_game_apk_offline_compatibility",
-            "expected_apk_sha256": APK_SHA256, "expected_version_code": BUILD,
+            "source_profile": profile_name, "expected_apk_bytes": profile["bytes"],
+            "expected_metadata_hash": profile["metadata_hash"].copy(), "actual_sha256": None,
+            "expected_version_code": BUILD,
+            "authenticity_gate": {"method": "apksigner_verified_publisher_certificate_sha256",
+                                  "expected_certificate_sha256": PUBLISHER_SHA256, "verified": False},
             "game_installed": False, "game_authenticated": False, "data_source_ready": False,
             "account_login_attempted": False, "guest_authentication_requested": False,
             "apk_persisted_as_artifact": False, "android_state_persisted": False,
-            "launch_attempted": False, "failure_category": None,
+            "launch_attempted": False, "failure_category": None, "failure_detail": None,
             "notes": ["A running offline process does not establish full game functionality or sign-in support.",
+                      "Published SHA1 metadata is not a substitute for the mandatory publisher APK signature verification.",
                       "Only bounded observations are published; no APK, raw logs, XML or account data."]}
 
 
@@ -408,7 +438,9 @@ def execute(phase):
                     raise CompatError("temporary_path_outside_workspace")
                 apk = Path(temporary) / "game.apk"
                 report["download"] = download_apk(os.environ.get("APK_SOURCE_URL", ""), apk)
+                report["actual_sha256"] = report["download"]["actual_sha256"]
                 report["verified_apk"], activity = verify_apk(apk)
+                report["authenticity_gate"]["verified"] = True
                 report["network_before_install"] = disable_android_network()
                 if not report["network_before_install"]["verified"]:
                     raise CompatError("offline_network_not_verified")
@@ -431,6 +463,7 @@ def execute(phase):
                 report["disk_used_delta_bytes"] = report["host_after"]["disk_bytes"]["used"] - report["host_before"]["disk_bytes"]["used"]
     except CompatError as error:
         report["failure_category"], status = error.category, 1
+        report["failure_detail"] = error.detail
     except Exception:
         # Do not stringify URL, HTTP headers, subprocess output or exceptions.
         report["failure_category"], status = "local_probe_error", 1

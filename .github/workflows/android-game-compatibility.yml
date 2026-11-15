@@ -7,6 +7,14 @@ on:
         description: Public HTTPS APK URL or the verified APKMirror variant page
         required: true
         type: string
+      source_profile:
+        description: Published file metadata; publisher signature verification is always mandatory
+        required: true
+        type: choice
+        default: apkmirror-203982
+        options:
+          - apkmirror-203982
+          - apkpure-203982
       launch_offline:
         description: Launch only after verified Android airplane mode and no default route
         required: true
@@ -25,6 +33,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.private == false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      APK_SOURCE_PROFILE: ${{ inputs.source_profile }}
     steps:
       - name: Check out source without persisting credentials
         id: checkout
