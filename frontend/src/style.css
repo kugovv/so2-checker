@@ -3,3 +3,14 @@
 @media(min-width:600px){.main-content{padding:24px 32px 110px}.app-header{padding-right:32px;padding-left:32px}.rating-main{padding:24px}.rating-large{font-size:76px}.metric{padding:18px}.metric strong{font-size:27px}.metric small{font-size:9px}.stats-grid .metric-label{font-size:11px}.form-symbol{margin-right:14px}.match-card{padding:15px;gap:16px}.match-main strong{font-size:14px}.match-main small{font-size:10px}.kda{font-size:12px}.match-card .rating{font-size:21px}.chart-container{height:250px}.intro{padding-top:40px}.intro-features{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:0;gap:12px}.intro-features>div{display:flex;flex-direction:column;align-items:flex-start;gap:7px;border:1px solid #414a52;padding:15px 12px}.intro-features span{font-size:8px}.intro h1{font-size:47px}.intro-emblem{margin-top:40px}.intro-features strong{font-size:11px}.intro .button{min-height:49px;font-size:13px}.onboarding{max-width:500px;margin:26px auto 0;padding:30px}.onboarding h1{font-size:38px}.comparison-row strong{font-size:11px}.participant-row strong{font-size:12px}.participant-row{font-size:11px}.participant-header{font-size:9px}.detail-hero h1{font-size:30px}.header-actions .icon-button{width:40px}}
 @media(max-width:374px){.main-content{padding-left:15px;padding-right:15px}.app-header{padding-left:15px;padding-right:15px;gap:8px}.brand{font-size:17px;gap:8px}.brand-mark{width:34px;height:35px}.version-tag{font-size:7px;padding:3px}.header-actions{gap:0}.header-actions .icon-button{width:31px}.mode-switch button{font-size:10px;gap:5px}.metric{padding:12px 8px}.metric strong{font-size:20px}.metric-label{font-size:9px}.metric small{font-size:6px}.match-chevron{display:none}.match-card{gap:8px;padding:11px 9px}.match-main strong{font-size:11px}.match-main small{font-size:7px}.kda{font-size:9px}.intro h1{font-size:36px}.intro{padding-left:21px;padding-right:21px}.input-row .button{padding:9px 7px;font-size:9px}.uid-form .input-prefix{padding:0 4px}.onboarding{padding:21px 17px}.stability-row .metric{padding:10px}.stability-row .metric small{font-size:7px}.participant-row,.participant-header{grid-template-columns:minmax(0,1fr) 68px 45px}.participant-row .rating{font-size:13px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition:none!important}}
+
+/* Mobile labels must remain legible without zooming. */
+@media (max-width: 599px) {
+  .micro, .metric small, .stability-row .metric small, .match-main small,
+  .participant-row small, .participant-header, .sample-line { font-size: 10px; }
+  .metric-label, .bottom-nav button, .comparison-row strong { font-size: 11px; }
+  .preliminary-badge { font-size: 9px; letter-spacing: .25px; }
+  .rating-unit { font-size: 9px; letter-spacing: .6px; }
+  .participant-row { font-size: 11px; }
+  .participant-row strong { font-size: 11px; }
+}
