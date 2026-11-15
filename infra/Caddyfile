@@ -1,0 +1,19 @@
+{$API_DOMAIN} {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000"
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org"
+    }
+    reverse_proxy 127.0.0.1:8171
+    log {
+        output file /var/log/caddy/so2-check.log {
+            roll_size 5MiB
+            roll_keep 3
+            roll_keep_for 168h
+        }
+        format json
+    }
+}

@@ -1,0 +1,28 @@
+[Unit]
+Description=Standoff Checker API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=so2check
+Group=so2check
+WorkingDirectory=/opt/so2-check/backend
+EnvironmentFile=/etc/so2-check/app.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/so2-check/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8171 --workers 1 --no-access-log --log-level warning
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/so2-check
+MemoryHigh=140M
+MemoryMax=200M
+CPUQuota=70%
+LogNamespace=so2-check
+
+[Install]
+WantedBy=multi-user.target

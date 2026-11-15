@@ -1,0 +1,15 @@
+[Unit]
+Description=Backup Standoff Checker database
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=so2check
+Group=so2check
+ExecStart=/opt/so2-check/infra/backup.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/so2-check/backups
+UMask=0077
+LogNamespace=so2-check

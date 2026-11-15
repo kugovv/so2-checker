@@ -1,0 +1,28 @@
+[Unit]
+Description=Standoff Checker Telegram bot
+After=network-online.target so2-check-api.service
+Wants=network-online.target
+
+[Service]
+User=so2check
+Group=so2check
+WorkingDirectory=/opt/so2-check/backend
+EnvironmentFile=/etc/so2-check/app.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/so2-check/venv/bin/python -m app.bot
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/so2-check
+MemoryHigh=100M
+MemoryMax=150M
+CPUQuota=30%
+LogNamespace=so2-check
+
+[Install]
+WantedBy=multi-user.target
