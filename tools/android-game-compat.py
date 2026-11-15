@@ -331,7 +331,25 @@ def verify_apk(path, *, signature_only=False):
             "manifest_checked": True, "zip_abi_checked": True}, activity.group(1)
 
 
-def route_diagnostics(output, family):
+def command_failure_detail(tool, code, output, errors):
+    return {"tool": tool, "exit_code": code,
+            "stdout": output.encode("utf-8")[:2048].decode("utf-8", errors="ignore"),
+            "stderr": errors.encode("utf-8")[:2048].decode("utf-8", errors="ignore")}
+
+
+def dummy_link_diagnostics(code, output, errors):
+    """Prove kernel link-kind dummy, rather than trusting the name dummy0."""
+    encoded = output.encode("utf-8")
+    bounded = encoded[:2048].decode("utf-8", errors="ignore")
+    headers = re.findall(r"^\d+:\s+([^\s:]+):", bounded, re.M)
+    dummy_kind = bool(re.search(r"^[ \t]+dummy(?:[ \t]|$)", bounded, re.M))
+    verified = code == 0 and len(encoded) <= 2048 and headers == ["dummy0"] and dummy_kind
+    return {"exit_code": code, "interface": "dummy0", "kernel_kind_dummy_verified": verified,
+            "output_truncated": len(encoded) > 2048, "stdout": bounded,
+            "stderr": errors.encode("utf-8")[:1024].decode("utf-8", errors="ignore")}
+
+
+def route_diagnostics(output, family, *, verified_dummy_interface=False):
     """Classify destinations, not occurrences of 'default' in table names.
 
     ip-route's unreachable/blackhole/prohibit entries discard packets; throw
@@ -346,7 +364,7 @@ def route_diagnostics(output, family):
     truncated = len(encoded) > limit or len(lines) > 128
     nonusable = {"unreachable", "throw", "prohibit", "blackhole"}
     types = nonusable | {"unicast", "local", "broadcast", "multicast", "anycast", "nat"}
-    blocking_defaults = nonusable_defaults = unparsed = parsed = 0
+    blocking_defaults = nonusable_defaults = dummy_defaults = unparsed = parsed = 0
     for line in lines[:128]:
         tokens = line.split()
         route_type = tokens[0] if tokens[0] in types else "unicast"
@@ -369,6 +387,13 @@ def route_diagnostics(output, family):
         if default:
             if route_type in nonusable:
                 nonusable_defaults += 1
+            elif (route_type == "unicast" and verified_dummy_interface and tokens.count("dev") == 1
+                  and tokens.index("dev") + 1 < len(tokens) and tokens[tokens.index("dev") + 1] == "dummy0"
+                  and not any(word in tokens for word in ("via", "nexthop", "nhid", "encap"))):
+                # Android's verified dummy link is a packet sink. Forwarding
+                # modifiers or an additional/default real interface still block.
+                nonusable_defaults += 1
+                dummy_defaults += 1
             else:
                 # Omitted/unicast types and less common default route types are
                 # conservatively treated as potentially usable, even linkdown.
@@ -376,6 +401,7 @@ def route_diagnostics(output, family):
     return {"classification_complete": not truncated and unparsed == 0,
             "usable_or_uncertain_default_count": blocking_defaults,
             "nonusable_default_count": nonusable_defaults,
+            "verified_dummy_default_count": dummy_defaults,
             "parsed_route_count": parsed, "unparsed_line_count": unparsed,
             "output_truncated": truncated, "stdout": bounded}
 
@@ -385,13 +411,18 @@ def offline_status():
     wifi = adb("shell", "settings", "get", "global", "wifi_on")
     routes = [adb("shell", "ip", family, "route", "show", "table", "all") for family in ("-4", "-6")]
     commands_ok = airplane[0] == wifi[0] == 0 and all(row[0] == 0 for row in routes)
-    diagnostics = {"ipv" + str(family): {"exit_code": row[0], **route_diagnostics(row[1], family)}
+    dummy = None
+    if any(re.search(r"(?:^|\s)dev\s+dummy0(?:\s|$)", row[1]) for row in routes):
+        dummy = dummy_link_diagnostics(*adb("shell", "ip", "-d", "link", "show", "dev", "dummy0"))
+    verified_dummy = dummy is not None and dummy["kernel_kind_dummy_verified"]
+    diagnostics = {"ipv" + str(family): {"exit_code": row[0], **route_diagnostics(row[1], family, verified_dummy_interface=verified_dummy)}
                    for family, row in zip((4, 6), routes)}
     default = any(row["usable_or_uncertain_default_count"] for row in diagnostics.values())
     complete = all(row["classification_complete"] for row in diagnostics.values())
     return {"airplane_mode_enabled": airplane[1].strip() == "1", "wifi_disabled": wifi[1].strip() == "0",
             "route_queries_succeeded": commands_ok, "default_route_present": bool(default),
             "route_classification_complete": complete, "route_diagnostics": diagnostics,
+            "dummy_link_diagnostics": dummy,
             "verified": commands_ok and complete and airplane[1].strip() == "1" and wifi[1].strip() == "0" and not default}
 
 
@@ -435,9 +466,9 @@ def launch_offline(activity, output_directory):
     # complete component for the remote Android shell, including literal '$'.
     import shlex
     component = shlex.quote(PACKAGE + "/" + activity)
-    code, output, _ = adb("shell", "am start -W -n " + component, timeout=60)
+    code, output, errors = adb("shell", "am start -W -n " + component, timeout=60)
     if code != 0 or "Error:" in output or "Error type" in output or "Status: timeout" in output:
-        raise CompatError("activity_launch_failed")
+        raise CompatError("activity_launch_failed", command_failure_detail("adb-am-start", code, output, errors))
     first_pid = process_id()
     time.sleep(30)
     alive, focused = process_id() is not None, foreground()
@@ -532,9 +563,9 @@ def execute(phase):
                     report["network_before_install"] = disable_android_network()
                     if not report["network_before_install"]["verified"]:
                         raise CompatError("offline_network_not_verified")
-                    code, output, _ = adb("install", "--no-streaming", str(apk), timeout=180)
+                    code, output, errors = adb("install", "--no-streaming", str(apk), timeout=180)
                     if code != 0 or "Success" not in output:
-                        raise CompatError("apk_install_failed")
+                        raise CompatError("apk_install_failed", command_failure_detail("adb-install", code, output, errors))
                     report["game_installed"] = True
                     if os.environ.get("ALLOW_OFFLINE_LAUNCH") == "true":
                         report["launch_attempted"] = True

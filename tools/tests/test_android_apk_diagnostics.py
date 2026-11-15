@@ -97,6 +97,61 @@ class OfflineRouteTests(unittest.TestCase):
                 self.assertFalse(result["verified"])
         self.assertTrue(self.offline_with("default via 10.0.2.2 dev eth0")["default_route_present"])
 
+    def test_dummy_defaults_require_positive_kernel_kind_proof_and_no_forwarding_modifiers(self):
+        route = "default dev dummy0 table 1002 proto static scope link"
+        self.assertEqual(probe.route_diagnostics(route, 4)["usable_or_uncertain_default_count"], 1)
+        verified = probe.route_diagnostics(route, 4, verified_dummy_interface=True)
+        self.assertEqual(verified["verified_dummy_default_count"], 1)
+        self.assertEqual(verified["usable_or_uncertain_default_count"], 0)
+        for extra in ("\ndefault dev eth0 table 1003", " via 10.0.2.2", " nexthop dev eth0", " encap mpls 100"):
+            with self.subTest(extra=extra):
+                result = probe.route_diagnostics(route + extra, 4, verified_dummy_interface=True)
+                self.assertGreater(result["usable_or_uncertain_default_count"], 0)
+
+    def test_dummy_link_proof_rejects_spoofed_name_unknown_kind_and_failed_query(self):
+        header = "9: dummy0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN\n"
+        link = "    link/ether 4a:5c:0b:ff:e7:e4 brd ff:ff:ff:ff:ff:ff\n"
+        valid = header + link + "    dummy numtxqueues 1 numrxqueues 1\n"
+        self.assertTrue(probe.dummy_link_diagnostics(0, valid, "")["kernel_kind_dummy_verified"])
+        for code, output in ((0, header + link + "    veth numtxqueues 1\n"),
+                             (0, header + link), (1, valid), (None, valid),
+                             (0, valid.replace("dummy0:", "wlan0:")), (0, valid + "x" * 2049)):
+            with self.subTest(code=code, output=output[:60]):
+                result = probe.dummy_link_diagnostics(code, output, "")
+                self.assertFalse(result["kernel_kind_dummy_verified"])
+                self.assertLessEqual(len(result["stdout"].encode()), 2048)
+
+    def test_offline_status_queries_kernel_kind_before_accepting_android_dummy_routes(self):
+        link = ("9: dummy0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500\n"
+                "    link/ether 4a:5c:0b:ff:e7:e4 brd ff:ff:ff:ff:ff:ff\n"
+                "    dummy numtxqueues 1 numrxqueues 1\n")
+        for kind_output, expected in ((link, True), (link.replace("    dummy ", "    veth "), False), ("unknown output", False)):
+            def adb(*args, **kwargs):
+                if args[-1] == "airplane_mode_on":
+                    return 0, "1\n", ""
+                if args[-1] == "wifi_on":
+                    return 0, "0\n", ""
+                if "link" in args:
+                    return 0, kind_output, ""
+                return 0, "default dev dummy0 table 1002 proto static\n", ""
+            with self.subTest(expected=expected), patch.object(probe, "adb", side_effect=adb) as calls:
+                result = probe.offline_status()
+                self.assertEqual(result["verified"], expected)
+                self.assertEqual(result["dummy_link_diagnostics"]["kernel_kind_dummy_verified"], expected)
+                calls.assert_any_call("shell", "ip", "-d", "link", "show", "dev", "dummy0")
+
+    def test_install_and_launch_command_diagnostics_are_bounded_and_launch_failure_retained(self):
+        detail = probe.command_failure_detail("adb-install", 1, "Ж" * 3000, "INSTALL_FAILED_NO_MATCHING_ABIS")
+        self.assertLessEqual(len(detail["stdout"].encode()), 2048)
+        self.assertEqual(detail["stderr"], "INSTALL_FAILED_NO_MATCHING_ABIS")
+        with patch.object(probe, "offline_status", return_value={"verified": True}), patch.object(
+                probe, "adb", return_value=(1, "Error type 3", "Activity class does not exist")):
+            with self.assertRaises(probe.CompatError) as caught:
+                probe.launch_offline("com.unity3d.player.UnityPlayerActivity", Path("unused"))
+        self.assertEqual(caught.exception.category, "activity_launch_failed")
+        self.assertEqual(caught.exception.detail["exit_code"], 1)
+        self.assertEqual(caught.exception.detail["stdout"], "Error type 3")
+
 
 if __name__ == "__main__":
     unittest.main()
