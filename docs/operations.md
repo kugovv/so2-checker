@@ -2,13 +2,13 @@
 
 ## Текущее состояние
 
-Интерфейс опубликован на GitHub Pages: `https://kugovv.github.io/so2-checker/`. Кнопка меню `@so2_check_bot` настроена на этот адрес. Место размещения backend ещё согласуется с владельцем. На предоставленном VPS веб-приложение, база приложения и его бот не развёрнуты. В ходе первоначальной подготовки установлены `python3-venv` и `caddy`, создан пустой пользователь `so2check` и отдельные пустые каталоги; после смены указания Caddy остановлен и его автозапуск отключён. Существующие `shadow-empire-admin` и `shadow-empire-bot` остались активны.
+Интерфейс опубликован на GitHub Pages: `https://kugovv.github.io/so2-checker/`. Кнопка меню `@so2_check_bot` настроена на этот адрес. После отдельного разрешения владельца backend, PostgreSQL, очередь и бот развёрнуты на VPS. API: `https://so2-api.50.114.115.221.sslip.io`. Caddy выдал действующий сертификат Let's Encrypt, HTTPS проверен внешним клиентом. Интерфейс на VPS не размещён. Существующие `shadow-empire-admin` и `shadow-empire-bot` остались активны. Источник игровой статистики ещё не подключён; по UID `202777998` реальные матчи не получены.
 
-Ниже — эксплуатационные команды **для будущего backend**, если будут установлены приложенные systemd-шаблоны. Они не являются отчётом об успешном развёртывании.
+Ниже — команды установленного backend. Сервисы и таймер резервного копирования включены в автозапуск. Проверены контролируемый перезапуск и восстановление дампа в отдельную временную БД; тестовая БД после проверки удалена. Образ приложения первоначально развёрнут из commit `083acb1b`, его идентификатор хранится в `/opt/so2-check/RELEASE`.
 
 ## Изоляция
 
-Рабочий каталог `/opt/so2-check`, конфигурация `/etc/so2-check/app.env`, состояние `/var/lib/so2-check`, пользователь `so2check`, отдельная PostgreSQL БД/роль `so2check`. API слушает только `127.0.0.1:8171`; наружу выводится API через Caddy с HTTPS. `API_DOMAIN` должен быть настоящим разрешающимся доменом выбранного backend. Интерфейс на VPS не обслуживается. Не изменять чужие сервисы, роли или proxy virtual hosts.
+Рабочий каталог `/opt/so2-check`, конфигурация `/etc/so2-check/app.env`, состояние `/var/lib/so2-check`, пользователь `so2check`, отдельная PostgreSQL БД/роль `so2check`. API слушает только `127.0.0.1:8171`; наружу выводится API через Caddy с HTTPS. `API_DOMAIN=so2-api.50.114.115.221.sslip.io` задан в `/etc/systemd/system/caddy.service.d/so2-check.conf`. В GitHub Repository variables `VITE_API_URL` указан тот же HTTPS origin. Интерфейс на VPS не обслуживается. Не изменять чужие сервисы, роли или proxy virtual hosts.
 
 Секретный конфигурационный файл — `root:so2check`, режим `0640`, каталог `0750`. Игровая сессия хранится отдельным файлом `0600` и недоступна frontend. Роль PostgreSQL не суперпользователь, владеет только собственной БД. Резервное копирование ниже использует локальный Unix socket с peer-аутентификацией одноимённого пользователя. Существующие правила PostgreSQL других приложений не изменяются.
 
@@ -16,8 +16,8 @@
 
 ```sh
 systemctl status so2-check-api so2-check-worker so2-check-bot
-curl --fail https://YOUR_API_DOMAIN/healthz
-curl --fail https://YOUR_API_DOMAIN/api/status
+curl --fail https://so2-api.50.114.115.221.sslip.io/healthz
+curl --fail https://so2-api.50.114.115.221.sslip.io/api/status
 systemctl restart so2-check-api so2-check-worker so2-check-bot
 journalctl --namespace=so2-check -u so2-check-api -u so2-check-worker -u so2-check-bot -n 100 --no-pager
 systemctl list-timers so2-check-backup.timer
@@ -54,7 +54,7 @@ sudo -u so2check pg_restore --no-owner --no-acl --exit-on-error --dbname=so2chec
 
 Фактический размер игровых записей пока измерить нельзя — реальных ответов нет. Полные диагностические ответы не сохраняются; хранятся только нормализованные компактные показатели, формула и результаты. Автоматического удаления матчей нет. После появления реальных данных измерить `pg_database_size` / `pg_total_relation_size`, рост за неделю и запас диска; политику архива менять явно, без молчаливой очистки. API выдаёт не более 10 тысяч последних архивных матчей с признаком усечения; это лимит ответа, а не удаление БД.
 
-Приложенный namespace journald ограничивает журналы приложения 40 МБ/7 днями. Файл access log Caddy ротируется по 5 МБ с тремя архивами. Журналы не должны содержать исходный `initData`, bearer, bot token, handshake или пароли.
+Namespace journald настроен через `/etc/systemd/journald@so2-check.conf` и ограничивает журналы приложения 40 МБ/7 днями. Файл access log Caddy ротируется по 5 МБ с тремя архивами. Журналы не должны содержать исходный `initData`, bearer, bot token, handshake или пароли.
 
 ## Подключение игрового источника
 
@@ -62,4 +62,4 @@ sudo -u so2check pg_restore --no-owner --no-acl --exit-on-error --dbname=so2chec
 
 ## Telegram
 
-`PUBLIC_URL` бота — опубликованный HTTPS-адрес Pages, а не URL репозитория `github.com`. При старте aiogram устанавливает команду `/start` и кнопку меню. Inline-кнопка приходит в ответ на `/start`. Статическую кнопку меню можно настроить через Bot API отдельно, но без работающего bot worker `/start` отвечать не будет. Главное Mini App-поле профиля бота при необходимости включается владельцем в BotFather: `/mybots` → нужный бот → Bot Settings → Configure Mini App → Enable Mini App, указать опубликованный URL. Это дополнение к кнопке меню, а не условие её работы.
+`PUBLIC_URL` бота — опубликованный HTTPS-адрес Pages, а не URL репозитория `github.com`. Сервис `so2-check-bot` запущен; при старте aiogram устанавливает команду `/start` и кнопку меню. Inline-кнопка приходит в ответ на `/start`; обработчик и отсутствие конкурирующего polling проверены тестами. Проверка настоящего пользовательского входа внутри Telegram Android/iOS пока не выполнена. Главное Mini App-поле профиля бота при необходимости включается владельцем в BotFather: `/mybots` → нужный бот → Bot Settings → Configure Mini App → Enable Mini App, указать опубликованный URL. Это дополнение к уже настроенной кнопке меню, а не условие её работы.
