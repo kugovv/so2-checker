@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from . import collector as service,collector_models as c,models as m
 from .config import get_settings
 from .db import get_db
+from . import collector_startup
 
 router=APIRouter(prefix='/api/collector/v1')
 MAX_BODY=6*1024*1024
@@ -142,9 +143,16 @@ def frame(job_id:str,body:FrameBody,device=Depends(device_auth),db:Session=Depen
         path.chmod(0o600)
     except FileExistsError:
         if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:service.fail(409,'Conflicting stored frame')
-    response={'ok':True,'next_steps':[]}
+    startup=bool(re.fullmatch(r'startup_[0-4]',body.label))
+    analysis=collector_startup.inspect_startup(raw) if startup else {}
+    next_steps=collector_startup.advance(lease,body.label,analysis) if startup else []
+    response={'ok':True,'next_steps':next_steps}
     db.add(c.Frame(id=service.new_id(),lease_id=lease.id,sequence=body.sequence,sha256=digest,storage_path=relative.as_posix(),
-                   byte_size=len(raw),width=width,height=height,label=body.label,captured_at=body.captured_at,response=response))
+                   byte_size=len(raw),width=width,height=height,label=body.label,captured_at=body.captured_at,response=response,
+                   status='needs_review' if startup else 'queued',analysis=analysis,
+                   parser_version=service.PARSER_VERSION if startup else None))
+    if startup:
+        state=db.get(c.ProfileState,(job.uid,job.mode));state.error_code=analysis.get('reason','CALIBRATION_REQUIRED')
     lease.frame_count+=1;lease.match_frame_count+=int(body.label.startswith('match_'))
     db.commit();return response
 

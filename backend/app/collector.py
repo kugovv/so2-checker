@@ -156,7 +156,8 @@ def validate_steps(steps):
 def safe_plan(job):
     if type(job.max_matches) is not int or not 1<=job.max_matches<=20:fail(400,'max_matches must be 1..20')
     # No invented search coordinates. Only inspect the real game screen.
-    steps=[{'action':'launch_game'},{'action':'wait','ms':1500},{'action':'capture','label':'current_screen'},{'action':'done'}]
+    steps=[{'action':'launch_game'},{'action':'wait','ms':10000},{'action':'wait','ms':10000},
+           {'action':'capture','label':'startup_0'},{'action':'done'}]
     validate_steps(steps)
     return {'id':job.id,'player_id':job.uid,'mode':job.mode,'max_matches':job.max_matches,'steps':steps}
 
@@ -208,7 +209,8 @@ def complete(db,device,job_id,body):
     if body.frame_count!=lease.frame_count:fail(400,'frame_count mismatch')
     if body.status=='captured' and not body.frame_count:fail(400,'captured requires an accepted frame')
     lease.status='completed';lease.completion=value;job.completed_at=m.utcnow()
-    job.status='captured' if body.status=='captured' else 'failed'
+    job.status='partial' if body.status=='captured' else 'failed'
     # Captured is only transport success. No profile timestamp or ratings change.
-    state=db.get(c.ProfileState,(job.uid,job.mode));state.status='partial';state.error_code='CALIBRATION_REQUIRED' if body.status=='captured' else 'DEVICE_FAILED'
+    state=db.get(c.ProfileState,(job.uid,job.mode));state.status='partial'
+    state.error_code=(state.error_code or 'CALIBRATION_REQUIRED') if body.status=='captured' else 'DEVICE_FAILED'
     db.commit();return {'ok':True}

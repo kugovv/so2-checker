@@ -27,6 +27,8 @@ def enabled(monkeypatch,tmp_path,db_factory):
     monkeypatch.setattr(settings,'collector_schedule_enabled',False)
     monkeypatch.setattr(settings,'collector_storage',str(tmp_path/'frames'))
     monkeypatch.setattr(settings,'collector_pilot_uid','202777998')
+    from app import collector_startup
+    monkeypatch.setattr(collector_startup,'inspect_startup',lambda raw:{'screen_type':'unknown'})
     with db_factory() as db:
         db.add(c.Device(id='owner',label='test fixture',token_hash=collector.token_hash(TOKEN),revoked=False))
         db.add(c.Device(id='other',label='other fixture',token_hash=collector.token_hash(OTHER),revoked=False))
@@ -39,7 +41,7 @@ def claim(client,run='run_1',device='android_uuid',headers=HEADERS):
 
 def frame_body(color='black',run='run_1'):
     buffer=BytesIO();Image.new('RGB',(900,400),color).save(buffer,format='PNG');raw=buffer.getvalue()
-    return dict(run_id=run,sequence=0,label='current_screen',width=900,height=400,image_base64=base64.b64encode(raw).decode(),sha256=hashlib.sha256(raw).hexdigest(),package_name='com.axlebolt.standoff2',captured_at=m.utcnow().isoformat())
+    return dict(run_id=run,sequence=0,label='startup_0',width=900,height=400,image_base64=base64.b64encode(raw).decode(),sha256=hashlib.sha256(raw).hexdigest(),package_name='com.axlebolt.standoff2',captured_at=m.utcnow().isoformat())
 
 
 def upload(client,job,body=None,headers=HEADERS):
@@ -192,3 +194,66 @@ def test_worker_restart_does_not_retry_oom_or_interrupted_frames_forever(client,
     with db_factory() as db:
         frame=db.scalar(select(c.Frame));assert frame.status=='needs_review'
         assert frame.analysis['reason']=='INTERRUPTED_RETRY_LIMIT'
+
+
+def test_loading_is_polled_dynamically_and_retries_do_not_issue_more_steps(client,db_factory,enabled,monkeypatch):
+    from app import collector_startup
+    monkeypatch.setattr(collector_startup,'inspect_startup',lambda raw:{'screen_type':'loading'})
+    plan=claim(client).json();job=plan['id']
+    assert [x['ms'] for x in plan['steps'] if x['action']=='wait']==[10000,10000]
+    for sequence in range(5):
+        body=frame_body();body.update(sequence=sequence,label=f'startup_{sequence}')
+        first=upload(client,job,body)
+        assert first.status_code==200 and upload(client,job,body).json()==first.json()
+        more=first.json()['next_steps']
+        if sequence<4:
+            assert more==[{'action':'wait','ms':10000},{'action':'wait','ms':10000},
+                          {'action':'capture','label':f'startup_{sequence+1}'}]
+        else:assert more==[]
+    with db_factory() as db:
+        lease=db.scalar(select(c.Lease));assert lease.frame_count==5 and lease.steps_issued==17
+        collector.validate_steps(lease.plan['steps'])
+        frame=db.scalar(select(c.Frame).where(c.Frame.sequence==4))
+        assert frame.analysis['reason']=='GAME_LOAD_TIMEOUT'
+        assert db.get(c.ProfileState,('202777998','competitive')).last_success_at is None
+    assert client.post(f'/api/collector/v1/jobs/{job}/complete',headers=HEADERS,json={
+        'run_id':'run_1','status':'captured','frame_count':5}).status_code==200
+    with db_factory() as db:
+        assert db.get(c.Job,job).status=='partial'
+        assert db.get(c.ProfileState,('202777998','competitive')).error_code=='GAME_LOAD_TIMEOUT'
+
+
+@pytest.mark.parametrize('screen,reason',[('unknown','CALIBRATION_REQUIRED'),('profile_candidate','CALIBRATION_REQUIRED'),('blank','WAITING_FOR_GAME')])
+def test_startup_never_taps_an_unverified_screen(client,db_factory,enabled,monkeypatch,screen,reason):
+    from app import collector_startup
+    monkeypatch.setattr(collector_startup,'inspect_startup',lambda raw:{'screen_type':screen})
+    job=claim(client).json()['id'];response=upload(client,job).json()
+    assert all(s['action'] in {'wait','capture'} for s in response['next_steps'])
+    with db_factory() as db:assert db.scalar(select(c.Frame)).analysis['reason']==reason
+
+
+def test_black_frame_probe_needs_no_tesseract():
+    import subprocess,sys
+    payload=base64.b64decode(frame_body()['image_base64'])
+    process=subprocess.run([sys.executable,'-m','app.collector_vision_worker'],input=payload,cwd=Path(__file__).resolve().parents[1],capture_output=True,timeout=10)
+    assert process.returncode==0
+    assert json.loads(process.stdout)['screen_type']=='blank'
+
+
+def test_observed_loading_artwork_probe_when_private_frame_available():
+    import subprocess,sys
+    root=Path(__file__).resolve().parents[2]/'.secrets'
+    paths=[root/name for name in ['collector-second-frame.jpg','collector-menu-frame.jpg']]
+    if not all(path.exists() for path in paths):pytest.skip('Owner launch frames are private')
+    for path in paths:
+        payload=path.read_bytes()
+        process=subprocess.run([sys.executable,'-m','app.collector_vision_worker'],input=payload,cwd=Path(__file__).resolve().parents[1],capture_output=True,timeout=10)
+        assert process.returncode==0
+        result=json.loads(process.stdout)
+        assert result['screen_type']=='loading' and result['recognition']=='observed_launch_artwork'
+
+
+def test_blank_and_other_images_are_not_known_loading_artwork():
+    from app.collector_screen import known_loading_artwork
+    assert not known_loading_artwork(Image.new('RGB',(900,400),'black'))
+    assert not known_loading_artwork(Image.new('RGB',(900,400),'white'))
