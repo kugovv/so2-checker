@@ -17,6 +17,11 @@ def main():
         if original.format not in {'PNG','JPEG'} or original.width*original.height>12_000_000:raise ValueError()
         original.verify()
     with Image.open(BytesIO(raw)) as original:image=ImageOps.exif_transpose(original).convert('RGB')
+    # Color check of the actual observed menu play button, combined with
+    # independent OCR anchors by the navigator. It never taps this button.
+    play=image.crop((round(image.width*.82),round(image.height*.88),round(image.width*.98),round(image.height*.96)))
+    red,green,blue=ImageStat.Stat(play.resize((32,16))).mean
+    menu_play_button_visible=green>100 and green>red*1.35 and green>blue*1.1
     caption_source=image
     thumbnail=ImageOps.grayscale(image).resize((160,90))
     histogram=thumbnail.histogram()
@@ -54,7 +59,8 @@ def main():
         loading=bool(re.search(r'\b(?:загрузка|loading)\b',joined,re.I))
         print(json.dumps({'match_id':match.group(1) if match else None,'detected_uid':uid.group(1) if uid else None,
                           'screen_type':'scoreboard_candidate' if match else 'profile_candidate' if uid else 'loading' if loading else 'unknown',
-                          'width':image.width,'height':image.height,'words':words},ensure_ascii=False))
+                          'width':image.width,'height':image.height,'words':words,
+                          'menu_play_button_visible':menu_play_button_visible},ensure_ascii=False))
 
 
 if __name__=='__main__':

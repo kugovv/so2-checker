@@ -143,7 +143,7 @@ def frame(job_id:str,body:FrameBody,device=Depends(device_auth),db:Session=Depen
         path.chmod(0o600)
     except FileExistsError:
         if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:service.fail(409,'Conflicting stored frame')
-    startup=bool(re.fullmatch(r'startup_[0-4]',body.label))
+    startup=bool(re.fullmatch(r'startup_[0-4]|nav_search',body.label))
     analysis=collector_startup.inspect_startup(raw) if startup else {}
     next_steps=collector_startup.advance(lease,body.label,analysis) if startup else []
     response={'ok':True,'next_steps':next_steps}

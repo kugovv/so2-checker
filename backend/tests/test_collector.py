@@ -257,3 +257,42 @@ def test_blank_and_other_images_are_not_known_loading_artwork():
     from app.collector_screen import known_loading_artwork
     assert not known_loading_artwork(Image.new('RGB',(900,400),'black'))
     assert not known_loading_artwork(Image.new('RGB',(900,400),'white'))
+
+
+def observed_menu_analysis():
+    # Public interface labels only; no owner/friend nicknames from the frame.
+    return {'width':2436,'height':1080,'screen_type':'unknown','menu_play_button_visible':True,'words':[
+        {'text':'Мои','left':347,'top':232,'width':55,'height':22},
+        {'text':'друзья','left':411,'top':238,'width':88,'height':22},
+        {'text':'Найти','left':347,'top':823,'width':76,'height':20},
+        {'text':'ИГРАТЬ','left':2083,'top':960,'width':184,'height':58}]}
+
+
+def test_observed_main_menu_requests_search_capture_and_stops_on_unknown_search(client,db_factory,enabled,monkeypatch):
+    from app import collector_startup
+    monkeypatch.setattr(collector_startup,'inspect_startup',lambda raw:observed_menu_analysis())
+    job=claim(client).json()['id'];body=frame_body()
+    first=upload(client,job,body).json()
+    assert first==upload(client,job,body).json()
+    steps=first['next_steps'];assert [s['action'] for s in steps]==['tap','wait','capture']
+    assert steps[0]['x']==pytest.approx(385/2436) and steps[0]['y']==pytest.approx(833/1080)
+    assert steps[-1]['label']=='nav_search'
+    monkeypatch.setattr(collector_startup,'inspect_startup',lambda raw:{'screen_type':'unknown'})
+    body.update(sequence=1,label='nav_search')
+    assert upload(client,job,body).json()=={'ok':True,'next_steps':[]}
+    with db_factory() as db:
+        lease=db.scalar(select(c.Lease));assert lease.steps_issued==8
+        assert db.get(c.ProfileState,('202777998','competitive')).last_success_at is None
+        assert db.scalar(select(func.count()).select_from(m.Match))==0
+
+
+@pytest.mark.parametrize('change',[
+    lambda a:a.update(menu_play_button_visible=False),lambda a:a.update(width=1080,height=2436),
+    lambda a:a.update(screen_type='profile_candidate'),lambda a:a['words'].pop(0),
+    lambda a:a['words'].append(dict(a['words'][2])),lambda a:a['words'][2].update(top=100),
+    lambda a:a['words'][2].update(width=9000),
+])
+def test_main_menu_navigation_requires_all_independent_guards(change):
+    from app.collector_navigation import main_menu_target
+    value=observed_menu_analysis();change(value)
+    assert main_menu_target(value) is None

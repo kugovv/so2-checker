@@ -153,6 +153,17 @@ def validate_steps(steps):
     return steps
 
 
+def issue_steps(lease,extra):
+    """Persist the exact dynamic queue before replying, including all APK caps."""
+    validate_steps(extra)
+    plan=dict(lease.plan);steps=list(plan['steps'])
+    position=len(steps)-1 if steps[-1].get('action')=='done' else len(steps)
+    steps[position:position]=extra
+    validate_steps(steps)
+    plan['steps']=steps;lease.plan=plan;lease.steps_issued=len(steps)
+    return extra
+
+
 def safe_plan(job):
     if type(job.max_matches) is not int or not 1<=job.max_matches<=20:fail(400,'max_matches must be 1..20')
     # No invented search coordinates. Only inspect the real game screen.
